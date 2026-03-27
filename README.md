@@ -78,7 +78,7 @@ Or point devenv at the flake in your `devenv.yaml`:
 ```yaml
 inputs:
   rf-datagen:
-    url: github:your-org/rf-datagen
+    url: github:Quantum-Serendipity/rf-datagen
 ```
 
 Then activate with:
@@ -120,10 +120,38 @@ rf-datagen validate-roundtrip              # all modes
 rf-datagen validate-roundtrip --clean-only --trials 3  # quick check
 ```
 
-### Inspect a signal class
+### Inspect a signal class (from existing dataset)
 
 ```bash
 rf-datagen inspect ./output --class FT8
+```
+
+### QC inspection tool
+
+The `qc` subcommand generates on-the-fly visualizations and self-contained HTML reports for inspecting pipeline stages — no pre-generated dataset needed. Requires `matplotlib` (`pip install rf-datagen[qc]`).
+
+```bash
+# Show generated text content for each generator type
+rf-datagen qc text --generator analog --count 10
+rf-datagen qc text --generator fldigi --mode PSK31
+
+# Export TTS speech audio as WAV files
+rf-datagen qc audio --count 5 --output /tmp/qc/audio
+
+# Visualize clean modulated signals (spectrograms, waveforms, PSD)
+rf-datagen qc modulated --mode FT8 CW --output /tmp/qc/modulated
+rf-datagen qc modulated --all-modes --snr-grid
+
+# Visualize signals after channel impairments
+rf-datagen qc impaired --mode CW --all-snr --output /tmp/qc/impaired
+rf-datagen qc impaired --mode DMR --scenario hf_poor --snr 5
+
+# Inspect an existing .npy dataset on disk (class distribution, sample plots)
+rf-datagen qc dataset --path ./output --mode FT8 --output /tmp/qc/dataset
+
+# Full self-contained HTML report for one mode (spectrograms, audio, SNR grid,
+# all 12 impairment scenarios, signal statistics)
+rf-datagen qc report --mode FT8 --output /tmp/qc/reports
 ```
 
 ## Configuration
@@ -141,6 +169,25 @@ See `config.toml` for the full set of options. Key sections:
 | `rf_datagen_iq.npy` | `(N, window_length)` complex64 array — one row per window |
 | `rf_datagen_tags.csv` | Per-window metadata: mode, SNR, scenario, etc. |
 
+## Flake Outputs
+
+| Output | Description |
+|---|---|
+| `packages.*.default` | CLI application with all external tools on `PATH` (fldigi, wsjtx, piper, etc.) |
+| `packages.*.pythonPackage` | Python library package for `import rf_datagen` in downstream flakes |
+| `devShells.*.default` | Development shell with Python deps + CLI tools |
+
+To use rf-datagen as a library dependency in another flake:
+
+```nix
+# In your flake inputs:
+inputs.rf-datagen.url = "github:Quantum-Serendipity/rf-datagen";
+inputs.rf-datagen.inputs.nixpkgs.follows = "nixpkgs";
+
+# In a python environment:
+python3.withPackages (ps: [ inputs.rf-datagen.packages.${system}.pythonPackage ])
+```
+
 ## Make Targets
 
 ```
@@ -149,6 +196,9 @@ make validate           # Validate dataset integrity
 make validate-roundtrip # Round-trip encode/decode validation
 make validate-quick     # Quick validation (clean-only, 3 trials)
 make validate-all       # All modes including STT
+make qc-report          # HTML QC report (default: FT8; override: make qc-report MODE=CW)
+make qc-modulated       # Spectrogram/waveform/PSD for all modes
+make qc-text            # Show text content from all generators
 make clean              # Remove generated output
 ```
 

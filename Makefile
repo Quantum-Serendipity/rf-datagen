@@ -3,6 +3,7 @@
 .PHONY: validate-wsjtx validate-packet validate-freedv validate-digivoice
 .PHONY: validate-analog validate-analog-stt validate-cw validate-sstv
 .PHONY: validate-impairment
+.PHONY: qc-report qc-modulated qc-text
 
 # ---------------------------------------------------------------------------
 # Generation
@@ -67,6 +68,19 @@ validate-all:
 		FREEDV M17 DMR DSTAR YSF NXDN \
 		SSB AM FM SSB_STT AM_STT FM_STT SSTV \
 		IMPAIRMENT
+
+# ---------------------------------------------------------------------------
+# QC inspection
+# ---------------------------------------------------------------------------
+
+qc-report:
+	python -m rf_datagen.cli qc report --mode $(or $(MODE),FT8) --output /tmp/qc_inspect/reports
+
+qc-modulated:
+	python -m rf_datagen.cli qc modulated --all-modes --snr-grid --output /tmp/qc_inspect/modulated
+
+qc-text:
+	python -m rf_datagen.cli qc text --generator all
 
 # ---------------------------------------------------------------------------
 # Housekeeping

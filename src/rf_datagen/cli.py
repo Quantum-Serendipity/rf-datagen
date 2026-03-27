@@ -382,7 +382,8 @@ def main():
                        help="Random seed")
 
     # inspect
-    p_ins = sub.add_parser("inspect", help="Inspect signal class samples")
+    p_ins = sub.add_parser("inspect",
+                           help="Plot spectrogram/stats for a class from dataset")
     p_ins.add_argument("data_dir", help="Path to dataset directory")
     p_ins.add_argument("--class", dest="signal_class", required=True,
                        help="Signal class name (e.g. FT8)")
