@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+*.whl
+dist/
+build/
+.eggs/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+
+# Testing / linting
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Nix
+.direnv/
+
+# Generated data
+output/
+piper-voices/
+*.npy
+*.npz
+*.wav
+
+# AI / LLM coding tools
+.claude/
+.cursor/
+.aider*
+.copilot/
+.codeium/
+.continue/
+.windsurf/
+.cody/
+.supermaven/
+.tabnine/
+.codex/
+.augment/
+.bolt/
+.v0/
+.lovable/
+.replit/
+.devin/
+.idx/
+.tabby/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

@@ -1,0 +1,74 @@
+[dataset]
+sample_rate = 12000            # IQ sample rate (Hz) — all signals synthesized at this rate
+window_length = 2048           # Samples per training window (~170 ms at 12 kHz)
+output_dir = "./output"
+seed = 42
+workers = 0                    # 0 = auto (CPU count); fallback for generators without own workers
+
+[impairments]
+snr_levels = [25, 20, 15, 10, 5, 0, -5, -10]  # dB; samples distributed evenly across levels
+max_freq_offset = 500          # Hz — max carrier offset applied in scenarios (RTL-SDR realistic)
+window_stride = 0              # 0 = auto (window_length // 2); controls extraction overlap
+window_power_threshold = 0.001 # windows below this mean power are discarded as silence
+
+[impairments.scenarios]
+# Relative weights (auto-normalized) for propagation/receiver scenario selection
+hf_clean = 0.08
+hf_good = 0.20
+hf_poor = 0.20
+vhf_mobile = 0.10
+uhf_urban = 0.05
+sdr_desktop = 0.10
+contest_crowded = 0.10
+overdriven = 0.05
+poorly_operated = 0.05
+vintage = 0.03
+near_far = 0.02
+auroral = 0.02
+
+[generators.synthetic]
+enabled = true
+samples_per_class = 9600
+classes = "all"
+# rsid_probability = 0.35      # Probability of prepending RSID preamble to synthetic segments
+# cw_wpm_range = [10, 30]      # CW words-per-minute range [min, max]
+
+[generators.synthetic.boost]
+PSK31 = 2.0
+PSK63 = 2.0
+MFSK16 = 3.0
+MFSK32 = 3.0
+
+[generators.fldigi]
+enabled = true
+samples_per_class = 6000
+workers = 14
+
+[generators.wsjtx]
+enabled = true
+samples_per_class = 6000
+# messages_per_mode = 200      # Messages to encode per WSJT-X mode (more = more diversity)
+
+[generators.analog]
+enabled = true
+samples_per_class = 6000
+utterances_per_class = 100
+voice_cache = "./piper-voices"
+
+[generators.sstv]
+enabled = true
+samples_per_class = 6000
+# images_per_mode = 10         # Images to render per SSTV sub-mode (more = more diversity)
+
+[generators.packet]
+enabled = true
+samples_per_class = 6000
+# packets_per_baud = 100       # Packets generated per baud rate (more = more diversity)
+
+[generators.digivoice]
+enabled = true
+samples_per_class = 6000
+utterances_per_class = 120
+voice_cache = "./piper-voices"
+# codec2_mode = "3200"                             # Codec2 bitrate for tier-2 voice (1200/1300/1400/1600/2400/3200)
+# freedv_modes = ["1600", "700C", "700D", "700E"]  # FreeDV sub-modes to generate
