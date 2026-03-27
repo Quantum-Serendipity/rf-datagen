@@ -129,11 +129,12 @@ def load_config(path: Optional[str | Path] = None) -> Config:
                 k: float(v) for k, v in imp["scenarios"].items()
             }
 
-    # Generators section
+    # Generators section — TOML is declarative: only listed generators run.
+    # When no [generators] section, the Config() defaults apply (all enabled).
     if "generators" in raw:
+        cfg.generators = {}
         for gen_name, gen_dict in raw["generators"].items():
-            if gen_name not in cfg.generators:
-                cfg.generators[gen_name] = GeneratorConfig()
+            cfg.generators[gen_name] = GeneratorConfig()
             _merge_generator(cfg.generators[gen_name], gen_dict)
 
     return cfg
