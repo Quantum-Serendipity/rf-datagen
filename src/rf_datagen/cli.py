@@ -32,7 +32,7 @@ def cmd_generate(args):
     if args.config and os.path.exists(args.config):
         shutil.copy2(args.config, os.path.join(output_dir, "config.toml"))
 
-    # Filter generators
+    # Filter generators — config is authoritative, CLI --generators narrows further
     if args.generators:
         requested = set(args.generators.split(","))
         gen_names = [g for g in requested if g in GENERATORS]
@@ -40,12 +40,12 @@ def cmd_generate(args):
         if unknown:
             print(f"Warning: unknown generators: {', '.join(sorted(unknown))}")
     else:
-        gen_names = list(GENERATORS.keys())
+        gen_names = [g for g in cfg.generators if g in GENERATORS]
 
     # Check prerequisites and build run plan
     plan = []
     for name in gen_names:
-        gen_cfg = cfg.generators.get(name, GeneratorConfig())
+        gen_cfg = cfg.generators[name]
         if not gen_cfg.enabled:
             continue
         # Apply dataset.workers as fallback for generators without own workers
