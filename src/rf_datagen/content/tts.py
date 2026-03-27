@@ -183,11 +183,14 @@ class TTSEngine:
         speed = np.random.randint(*SPEED_RANGE)
         wav_path = os.path.join(tmpdir, "speech.wav")
 
-        result = subprocess.run(
-            ["espeak-ng", "-v", voice, "-s", str(speed),
-             "-w", wav_path, text],
-            capture_output=True, text=True, timeout=30,
-        )
+        try:
+            result = subprocess.run(
+                ["espeak-ng", "-v", voice, "-s", str(speed),
+                 "-w", wav_path, text],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return np.array([]), 0
         if result.returncode != 0:
             return np.array([]), 0
 

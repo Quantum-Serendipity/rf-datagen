@@ -86,6 +86,7 @@
 
         devPython = python3.withPackages (ps: [
           ps.numpy ps.scipy ps.pillow ps.matplotlib
+          ps.pytest
           lib.pysstv
         ]);
       in {

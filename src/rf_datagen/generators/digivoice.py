@@ -17,7 +17,11 @@ from ..content.tts import (TTSEngine, apply_ptt_transients, apply_mic_effects,
                             apply_tx_audio_clipping)
 from ..protocols import frame_dmr, frame_dstar, frame_ysf, frame_p25, frame_nxdn
 from ..impairments import extract_windows, apply_impairments, configure_impairments
+from ..logging_config import get_logger
+from ..output import atomic_save_npy, atomic_write_csv
 from .base import BaseGenerator
+
+log = get_logger("digivoice")
 
 DIGIVOICE_MODES = ["FREEDV", "M17", "DMR", "DSTAR", "YSF", "P25", "NXDN"]
 TIER1_MODES = {"FREEDV", "M17"}
@@ -54,10 +58,13 @@ def modulate_gmsk(bit_stream, bit_rate, bt=0.5, fs=FS):
 def codec2_encode(raw_8k_path, tmpdir, mode="3200"):
     """Encode raw 8kHz s16le audio with Codec2, return encoded bits."""
     c2_path = os.path.join(tmpdir, "codec2.bin")
-    result = subprocess.run(
-        ["c2enc", mode, raw_8k_path, c2_path],
-        capture_output=True, timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            ["c2enc", mode, raw_8k_path, c2_path],
+            capture_output=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
     if result.returncode != 0 or not os.path.exists(c2_path):
         return None
     data = np.fromfile(c2_path, dtype=np.uint8)
@@ -76,10 +83,13 @@ def generate_freedv(raw_8k_path, tmpdir, submode=None, *, target_fs=FS,
         modes = freedv_modes or ["1600", "700C", "700D", "700E"]
         submode = np.random.choice(modes)
     out_path = os.path.join(tmpdir, "freedv_out.raw")
-    result = subprocess.run(
-        ["freedv_tx", submode, raw_8k_path, out_path],
-        capture_output=True, timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            ["freedv_tx", submode, raw_8k_path, out_path],
+            capture_output=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return np.array([], dtype=np.complex128)
     if result.returncode != 0 or not os.path.exists(out_path):
         return np.array([], dtype=np.complex128)
     raw = np.fromfile(out_path, dtype=np.int16)
@@ -95,11 +105,14 @@ def generate_freedv(raw_8k_path, tmpdir, submode=None, *, target_fs=FS,
 def generate_m17(raw_8k_path, tmpdir, *, target_fs=FS):
     """Generate M17 IQ using m17-mod CLI."""
     out_path = os.path.join(tmpdir, "m17_out.raw")
-    with open(raw_8k_path, "rb") as fin:
-        result = subprocess.run(
-            ["m17-mod", "-S", "W1AW", "-D", "ALL"],
-            stdin=fin, capture_output=True, timeout=30,
-        )
+    try:
+        with open(raw_8k_path, "rb") as fin:
+            result = subprocess.run(
+                ["m17-mod", "-S", "W1AW", "-D", "ALL"],
+                stdin=fin, capture_output=True, timeout=30,
+            )
+    except (subprocess.TimeoutExpired, OSError):
+        return np.array([], dtype=np.complex128)
     if result.returncode != 0 or len(result.stdout) == 0:
         return np.array([], dtype=np.complex128)
     raw = np.frombuffer(result.stdout, dtype=np.int16)
@@ -160,16 +173,15 @@ class DigivoiceGenerator(BaseGenerator):
         raise NotImplementedError("Use run() for digivoice generation")
 
     def run(self, output_dir, seed=42):
-        import csv
-
         configure_impairments(self.impairment_config)
 
         parts_dir = os.path.join(output_dir, "parts")
         os.makedirs(parts_dir, exist_ok=True)
 
         classes = self._resolve_classes()
+        results = {}
         if not classes:
-            return
+            return results
 
         voice_cache = self.config.voice_cache
         utterances = self.config.utterances_per_class
@@ -189,12 +201,15 @@ class DigivoiceGenerator(BaseGenerator):
                 n_samples = self._boosted_count(mode_name)
                 npy_path = os.path.join(parts_dir, f"{mode_name}.npy")
                 meta_path = os.path.join(parts_dir, f"{mode_name}_meta.csv")
+                hash_path = os.path.join(parts_dir, f"{mode_name}.hash")
+                cfg_hash = self._config_hash(mode_name, n_samples)
 
-                if os.path.exists(npy_path) and os.path.exists(meta_path):
-                    existing = np.load(npy_path, mmap_mode="r")
-                    if existing.shape[0] == n_samples:
-                        print(f"    {mode_name:>15s}: cached")
-                        continue
+                if self._check_checkpoint(npy_path, meta_path, hash_path,
+                                          n_samples, cfg_hash):
+                    log.info("%15s: cached", mode_name)
+                    results[mode_name] = {"status": "cached",
+                                          "samples": n_samples}
+                    continue
 
                 mode_iq_segments = []
                 np.random.seed(seed + hash(mode_name) % 10000)
@@ -231,7 +246,9 @@ class DigivoiceGenerator(BaseGenerator):
                         mode_iq_segments.append(iq)
 
                 if not mode_iq_segments:
-                    print(f"    {mode_name:>15s}: FAILED")
+                    log.warning("%15s: FAILED (no audio segments)", mode_name)
+                    results[mode_name] = {"status": "failed",
+                                          "reason": "no audio segments"}
                     continue
 
                 combined = np.concatenate(mode_iq_segments)
@@ -239,22 +256,27 @@ class DigivoiceGenerator(BaseGenerator):
                     combined, window_len=self.window_len,
                     stride=stride, power_threshold=power_threshold)
                 if len(raw_windows) == 0:
-                    print(f"    {mode_name:>15s}: FAILED (no valid windows)")
+                    log.warning("%15s: FAILED (no valid windows)", mode_name)
+                    results[mode_name] = {"status": "failed",
+                                          "reason": "no valid windows"}
                     continue
 
                 samples, meta = apply_impairments(
                     raw_windows, n_samples, fs=self.fs,
                     window_len=self.window_len, return_metadata=True)
 
-                np.save(npy_path, samples)
-                with open(meta_path, "w", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(["scenario"])
-                    for s in meta["scenarios"]:
-                        writer.writerow([s])
+                atomic_save_npy(npy_path, samples)
+                atomic_write_csv(meta_path, ["scenario"],
+                                 [[s] for s in meta["scenarios"]])
+                self._write_hash(hash_path, cfg_hash)
 
-                print(f"    {mode_name:>15s}: {len(raw_windows)} raw -> "
-                      f"{len(samples)} samples")
+                log.info("%15s: %d raw -> %d samples",
+                         mode_name, len(raw_windows), len(samples))
+                results[mode_name] = {"status": "ok",
+                                      "samples": len(samples),
+                                      "raw_windows": len(raw_windows)}
 
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+        return results

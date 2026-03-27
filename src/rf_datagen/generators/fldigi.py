@@ -16,7 +16,11 @@ from ..content.ham_text import get_text_for_mode
 from ..content.typing import TypingCadenceModel
 from ..impairments import extract_windows, apply_impairments, configure_impairments
 from ..isolation import IsolatedPulseServer
+from ..logging_config import get_logger
+from ..output import atomic_save_npy, atomic_write_csv
 from .base import BaseGenerator
+
+log = get_logger("fldigi")
 
 CAPTURE_FS = 48000
 
@@ -174,45 +178,49 @@ class FLDigiInstance:
 
     def _tx_chunk(self, mode_name, chunk_text, cadence=None):
         audio_path = os.path.join(self.audio_dir, f"{mode_name}_chunk.raw")
+        rec_proc = None
         audio_fd = open(audio_path, "wb")
-        rec_proc = subprocess.Popen(
-            ["parec", f"--device={self.sink_name}.monitor",
-             f"--rate={CAPTURE_FS}", "--channels=1", "--format=s16le"],
-            stdout=audio_fd, env=self._make_env(),
-        )
-        time.sleep(0.3)
-        self.server.text.clear_tx()
-        if cadence is not None:
-            feed_characters_with_cadence(self.server, chunk_text, cadence)
-        else:
-            self.server.text.add_tx(chunk_text)
-        self.server.main.tx()
-        chars_per_sec = MODE_CHARS_PER_SEC.get(mode_name, 5)
-        est_secs = len(chunk_text) / chars_per_sec + 10.0
-        deadline = time.time() + est_secs
-        tx_started = False
-        while time.time() < deadline:
-            try:
-                state = self.server.main.get_trx_state()
-                if state == "TX":
-                    tx_started = True
-                elif tx_started and state == "RX":
+        try:
+            rec_proc = subprocess.Popen(
+                ["parec", f"--device={self.sink_name}.monitor",
+                 f"--rate={CAPTURE_FS}", "--channels=1", "--format=s16le"],
+                stdout=audio_fd, env=self._make_env(),
+            )
+            time.sleep(0.3)
+            self.server.text.clear_tx()
+            if cadence is not None:
+                feed_characters_with_cadence(self.server, chunk_text, cadence)
+            else:
+                self.server.text.add_tx(chunk_text)
+            self.server.main.tx()
+            chars_per_sec = MODE_CHARS_PER_SEC.get(mode_name, 5)
+            est_secs = len(chunk_text) / chars_per_sec + 10.0
+            deadline = time.time() + est_secs
+            tx_started = False
+            while time.time() < deadline:
+                try:
+                    state = self.server.main.get_trx_state()
+                    if state == "TX":
+                        tx_started = True
+                    elif tx_started and state == "RX":
+                        break
+                except Exception:
                     break
+                time.sleep(0.5)
+            try:
+                self.server.main.rx()
             except Exception:
-                break
+                pass
             time.sleep(0.5)
-        try:
-            self.server.main.rx()
-        except Exception:
-            pass
-        time.sleep(0.5)
-        rec_proc.terminate()
-        try:
-            rec_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            rec_proc.kill()
-            rec_proc.wait()
-        audio_fd.close()
+        finally:
+            if rec_proc is not None:
+                rec_proc.terminate()
+                try:
+                    rec_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    rec_proc.kill()
+                    rec_proc.wait()
+            audio_fd.close()
         if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
             return np.array([], dtype=np.int16)
         raw_data = np.fromfile(audio_path, dtype=np.int16)
@@ -242,7 +250,7 @@ class FLDigiInstance:
             modem_name = modem_variants[ci % len(modem_variants)]
             for attempt in range(MAX_RETRIES):
                 if not self._is_alive():
-                    print(f" [restart]", end="", flush=True)
+                    log.debug("fldigi instance %d restarting", self.id)
                     self._restart()
                 try:
                     self.server.modem.set_by_name(modem_name)
@@ -303,13 +311,14 @@ class FldigiGenerator(BaseGenerator):
         os.makedirs(parts_dir, exist_ok=True)
 
         classes = self._resolve_classes()
+        all_results = {}
         if not classes:
-            return
+            return all_results
 
         n_workers = max(1, self.config.workers or os.cpu_count() or 1)
         n_workers = min(n_workers, len(classes))
 
-        print(f"  fldigi: {len(classes)} modes, {n_workers} instances")
+        log.info("fldigi: %d modes, %d instances", len(classes), n_workers)
 
         tmpdir = tempfile.mkdtemp(prefix="fldigi_gen_")
         instances = []
@@ -329,46 +338,55 @@ class FldigiGenerator(BaseGenerator):
                     mode_groups[i % n_workers].append(mode)
 
                 def worker_fn(inst, modes):
-                    results = []
+                    results = {}
                     for mode_name in modes:
                         npy_path = os.path.join(parts_dir, f"{mode_name}.npy")
                         meta_path = os.path.join(parts_dir, f"{mode_name}_meta.csv")
+                        hash_path = os.path.join(parts_dir, f"{mode_name}.hash")
                         n_samples = self._boosted_count(mode_name)
-                        if os.path.exists(npy_path) and os.path.exists(meta_path):
-                            existing = np.load(npy_path, mmap_mode="r")
-                            if existing.shape[0] == n_samples:
-                                print(f"    {mode_name:>15s}: cached")
-                                continue
+                        cfg_hash = self._config_hash(mode_name, n_samples)
+                        if self._check_checkpoint(npy_path, meta_path,
+                                                  hash_path, n_samples,
+                                                  cfg_hash):
+                            log.info("%15s: cached", mode_name)
+                            results[mode_name] = {"status": "cached",
+                                                  "samples": n_samples}
+                            continue
 
                         cps = MODE_CHARS_PER_SEC.get(mode_name, 5)
                         est_chars = int(n_samples * (self.window_len / self.fs) / 2 * cps * 1.5)
                         text = get_text_for_mode(mode_name, max(500, est_chars))
                         iq = inst.generate_mode(mode_name, text, target_fs=self.fs)
                         if len(iq) < self.window_len:
-                            print(f"    {mode_name:>15s}: FAILED")
+                            log.warning("%15s: FAILED (signal too short)",
+                                        mode_name)
+                            results[mode_name] = {"status": "failed",
+                                                  "reason": "signal too short"}
                             continue
                         raw_windows = extract_windows(
                             iq, window_len=self.window_len,
                             stride=stride,
                             power_threshold=power_threshold)
                         if len(raw_windows) == 0:
+                            results[mode_name] = {"status": "failed",
+                                                  "reason": "no valid windows"}
                             continue
                         samples, meta = apply_impairments(
                             raw_windows, n_samples, fs=self.fs,
                             window_len=self.window_len, return_metadata=True)
-                        import csv
-                        np.save(npy_path, samples)
-                        with open(meta_path, "w", newline="") as f:
-                            writer = csv.writer(f)
-                            writer.writerow(["scenario"])
-                            for s in meta["scenarios"]:
-                                writer.writerow([s])
-                        print(f"    {mode_name:>15s}: {len(raw_windows)} raw -> "
-                              f"{len(samples)} samples")
+                        atomic_save_npy(npy_path, samples)
+                        atomic_write_csv(meta_path, ["scenario"],
+                                         [[s] for s in meta["scenarios"]])
+                        self._write_hash(hash_path, cfg_hash)
+                        log.info("%15s: %d raw -> %d samples",
+                                 mode_name, len(raw_windows), len(samples))
+                        results[mode_name] = {"status": "ok",
+                                              "samples": len(samples),
+                                              "raw_windows": len(raw_windows)}
                     return results
 
                 if n_workers == 1:
-                    worker_fn(instances[0], classes)
+                    all_results.update(worker_fn(instances[0], classes))
                 else:
                     with ThreadPoolExecutor(max_workers=n_workers) as pool:
                         futures = {
@@ -377,9 +395,11 @@ class FldigiGenerator(BaseGenerator):
                                 zip(instances, mode_groups))
                         }
                         for future in as_completed(futures):
-                            future.result()
+                            all_results.update(future.result())
 
         finally:
             for inst in instances:
                 inst.stop()
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+        return all_results

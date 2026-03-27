@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import signal
 import shutil
 import sys
 import time
@@ -12,7 +13,11 @@ import numpy as np
 from .config import load_config, GeneratorConfig
 from .constants import SIGNAL_LABELS, WINDOW_LEN
 from .generators import GENERATORS
-from .output import assemble_parts, save_dataset
+from . import _state
+from .logging_config import setup_logging, get_logger
+from .output import assemble_parts, save_dataset, atomic_write_json
+
+log = get_logger("cli")
 
 
 def cmd_generate(args):
@@ -28,6 +33,9 @@ def cmd_generate(args):
     output_dir = cfg.dataset.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
+    setup_logging(output_dir=output_dir,
+                  verbose=args.verbose, quiet=args.quiet)
+
     # Copy config alongside output for reproducibility
     if args.config and os.path.exists(args.config):
         shutil.copy2(args.config, os.path.join(output_dir, "config.toml"))
@@ -38,7 +46,7 @@ def cmd_generate(args):
         gen_names = [g for g in requested if g in GENERATORS]
         unknown = requested - set(GENERATORS.keys())
         if unknown:
-            print(f"Warning: unknown generators: {', '.join(sorted(unknown))}")
+            log.warning("Unknown generators: %s", ", ".join(sorted(unknown)))
     else:
         gen_names = [g for g in cfg.generators if g in GENERATORS]
 
@@ -56,30 +64,56 @@ def cmd_generate(args):
                                window_len=cfg.dataset.window_length)
         missing = gen.check_prerequisites()
         if missing:
-            print(f"  {name}: skipping — missing tools: {', '.join(missing)}")
+            log.warning("%s: skipping — missing tools: %s", name,
+                        ", ".join(missing))
             continue
         plan.append((name, gen))
 
     if not plan:
-        print("No generators to run.")
+        log.error("No generators to run")
         return 1
 
     total_classes = sum(len(g.signal_classes) for _, g in plan)
     gen_list = ", ".join(n for n, _ in plan)
-    print(f"Generating across {total_classes} classes using: {gen_list}")
-    print(f"Output: {output_dir}")
-    print()
+    log.info("Generating across %d classes using: %s", total_classes, gen_list)
+    log.info("Output: %s", output_dir)
+
+    # Install graceful shutdown handler
+    _state.reset_shutdown()
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _handle_shutdown(signum, frame):
+        if _state.shutdown_requested():
+            # Second signal — force exit
+            sys.exit(1)
+        _state.request_shutdown()
+        sig_name = signal.Signals(signum).name
+        log.warning("%s received — finishing current class, "
+                    "then stopping. Press again to force quit.", sig_name)
+
+    signal.signal(signal.SIGINT, _handle_shutdown)
+    signal.signal(signal.SIGTERM, _handle_shutdown)
 
     t_start = time.time()
-    for name, gen in plan:
-        gen.run(output_dir, seed=cfg.dataset.seed)
-        print()
+    all_results = {}
+    try:
+        for name, gen in plan:
+            if _state.shutdown_requested():
+                log.warning("Shutdown requested — skipping %s", name)
+                break
+            gen_results = gen.run(output_dir, seed=cfg.dataset.seed)
+            if gen_results:
+                all_results.update(gen_results)
+    finally:
+        signal.signal(signal.SIGINT, prev_sigint)
+        signal.signal(signal.SIGTERM, prev_sigterm)
 
     # Assemble
-    print("Assembling dataset...")
+    log.info("Assembling dataset...")
     iq_data, tags = assemble_parts(output_dir)
     if len(iq_data) == 0:
-        print("No data generated.")
+        log.error("No data generated")
         return 1
 
     scenarios = [""] * len(tags)  # meta from parts CSVs if available
@@ -107,16 +141,43 @@ def cmd_generate(args):
     size_mb = os.path.getsize(
         os.path.join(output_dir, "rf_datagen_iq.npy")) / (1024 * 1024)
 
-    print(f"\nDone in {elapsed:.0f}s — {len(iq_data)} windows, {size_mb:.0f} MB")
+    log.info("Done in %.0fs — %d windows, %.0f MB", elapsed, len(iq_data),
+             size_mb)
 
     # Per-class summary
     from collections import Counter
     counts = Counter(tags)
-    print(f"\nPer-class counts ({len(counts)} classes):")
+    log.info("Per-class counts (%d classes):", len(counts))
     for label in SIGNAL_LABELS:
         if label in counts:
-            print(f"  {label:>15s}: {counts[label]}")
+            log.info("  %15s: %d", label, counts[label])
 
+    # Generation report: failures
+    failed = {k: v for k, v in all_results.items() if v["status"] == "failed"}
+    ok_count = sum(1 for v in all_results.values() if v["status"] in ("ok", "cached"))
+
+    if failed:
+        log.warning("FAILED (%d classes):", len(failed))
+        for cls, info in sorted(failed.items()):
+            log.warning("  %15s: %s", cls, info.get("reason", "unknown"))
+
+    # Write generation report
+    report = {
+        "total_classes": total_classes,
+        "generated": ok_count,
+        "failed": len(failed),
+        "total_windows": len(iq_data),
+        "elapsed_s": round(elapsed, 1),
+        "size_mb": round(size_mb, 1),
+        "per_class": all_results,
+    }
+    report_path = os.path.join(output_dir, "generation_report.json")
+    atomic_write_json(report_path, report)
+
+    if failed:
+        log.warning("Generated %d/%d classes (%d failed)",
+                    ok_count, total_classes, len(failed))
+        return 2  # partial success
     return 0
 
 
@@ -355,6 +416,10 @@ def main():
                        help="Output directory (overrides config)")
     p_gen.add_argument("--seed", "-s", type=int, default=None,
                        help="Random seed (overrides config)")
+    p_gen.add_argument("--verbose", "-v", action="store_true",
+                       help="Enable verbose (DEBUG) console output")
+    p_gen.add_argument("--quiet", "-q", action="store_true",
+                       help="Suppress INFO messages (WARNING only)")
 
     # list
     sub.add_parser("list", help="List all signal classes and their generators")

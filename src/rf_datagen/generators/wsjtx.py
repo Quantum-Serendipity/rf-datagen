@@ -126,8 +126,11 @@ def synthesize_gfsk_tones(symbols, tone_spacing, symbol_rate, base_freq,
 
 
 def encode_ft8(message):
-    result = subprocess.run(["ft8code", message],
-                            capture_output=True, text=True, timeout=10)
+    try:
+        result = subprocess.run(["ft8code", message],
+                                capture_output=True, text=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
     if result.returncode != 0:
         return None
     symbols = parse_ft8_symbols(result.stdout)
@@ -138,8 +141,11 @@ def encode_ft8(message):
 
 
 def encode_ft4(message):
-    result = subprocess.run(["ft8code", message],
-                            capture_output=True, text=True, timeout=10)
+    try:
+        result = subprocess.run(["ft8code", message],
+                                capture_output=True, text=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
     if result.returncode != 0:
         return None
     symbols = parse_ft8_symbols(result.stdout)
@@ -151,8 +157,11 @@ def encode_ft4(message):
 
 
 def encode_jt65(message):
-    result = subprocess.run(["jt65code", message],
-                            capture_output=True, text=True, timeout=10)
+    try:
+        result = subprocess.run(["jt65code", message],
+                                capture_output=True, text=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
     if result.returncode != 0:
         return None
     symbols = parse_jt65_symbols(result.stdout)
@@ -163,8 +172,11 @@ def encode_jt65(message):
 
 
 def encode_jt9(message):
-    result = subprocess.run(["jt9code", message],
-                            capture_output=True, text=True, timeout=10)
+    try:
+        result = subprocess.run(["jt9code", message],
+                                capture_output=True, text=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
     if result.returncode != 0:
         return None
     symbols = parse_jt9_symbols(result.stdout)

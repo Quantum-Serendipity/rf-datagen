@@ -15,7 +15,11 @@ from ..content.tts import (TTSEngine, apply_ptt_transients, apply_mic_effects,
                             apply_vox_artifacts, apply_tx_audio_clipping,
                             apply_contest_processing)
 from ..impairments import extract_windows, apply_impairments, configure_impairments
+from ..logging_config import get_logger
+from ..output import atomic_save_npy, atomic_write_csv
 from .base import BaseGenerator
+
+log = get_logger("analog")
 
 ANALOG_MODES = {
     "SSB": ["USB", "LSB"],
@@ -75,16 +79,15 @@ class AnalogGenerator(BaseGenerator):
         raise NotImplementedError("Use run() for analog generation")
 
     def run(self, output_dir, seed=42):
-        import csv
-
         configure_impairments(self.impairment_config)
 
         parts_dir = os.path.join(output_dir, "parts")
         os.makedirs(parts_dir, exist_ok=True)
 
         classes = self._resolve_classes()
+        results = {}
         if not classes:
-            return
+            return results
 
         voice_cache = self.config.voice_cache
         utterances = self.config.utterances_per_class
@@ -99,12 +102,15 @@ class AnalogGenerator(BaseGenerator):
                 n_samples = self._boosted_count(mode_name)
                 npy_path = os.path.join(parts_dir, f"{mode_name}.npy")
                 meta_path = os.path.join(parts_dir, f"{mode_name}_meta.csv")
+                hash_path = os.path.join(parts_dir, f"{mode_name}.hash")
+                cfg_hash = self._config_hash(mode_name, n_samples)
 
-                if os.path.exists(npy_path) and os.path.exists(meta_path):
-                    existing = np.load(npy_path, mmap_mode="r")
-                    if existing.shape[0] == n_samples:
-                        print(f"    {mode_name:>15s}: cached")
-                        continue
+                if self._check_checkpoint(npy_path, meta_path, hash_path,
+                                          n_samples, cfg_hash):
+                    log.info("%15s: cached", mode_name)
+                    results[mode_name] = {"status": "cached",
+                                          "samples": n_samples}
+                    continue
 
                 variants = ANALOG_MODES[mode_name]
                 mode_iq_segments = []
@@ -140,7 +146,9 @@ class AnalogGenerator(BaseGenerator):
                         mode_iq_segments.append(iq)
 
                 if not mode_iq_segments:
-                    print(f"    {mode_name:>15s}: FAILED (no audio)")
+                    log.warning("%15s: FAILED (no audio)", mode_name)
+                    results[mode_name] = {"status": "failed",
+                                          "reason": "no audio"}
                     continue
 
                 combined_iq = np.concatenate(mode_iq_segments)
@@ -148,22 +156,27 @@ class AnalogGenerator(BaseGenerator):
                     combined_iq, window_len=self.window_len,
                     stride=stride, power_threshold=power_threshold)
                 if len(raw_windows) == 0:
-                    print(f"    {mode_name:>15s}: FAILED (no valid windows)")
+                    log.warning("%15s: FAILED (no valid windows)", mode_name)
+                    results[mode_name] = {"status": "failed",
+                                          "reason": "no valid windows"}
                     continue
 
                 samples, meta = apply_impairments(
                     raw_windows, n_samples, fs=self.fs,
                     window_len=self.window_len, return_metadata=True)
 
-                np.save(npy_path, samples)
-                with open(meta_path, "w", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(["scenario"])
-                    for s in meta["scenarios"]:
-                        writer.writerow([s])
+                atomic_save_npy(npy_path, samples)
+                atomic_write_csv(meta_path, ["scenario"],
+                                 [[s] for s in meta["scenarios"]])
+                self._write_hash(hash_path, cfg_hash)
 
-                print(f"    {mode_name:>15s}: {len(raw_windows)} raw -> "
-                      f"{len(samples)} samples")
+                log.info("%15s: %d raw -> %d samples",
+                         mode_name, len(raw_windows), len(samples))
+                results[mode_name] = {"status": "ok",
+                                      "samples": len(samples),
+                                      "raw_windows": len(raw_windows)}
 
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+        return results

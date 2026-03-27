@@ -22,7 +22,10 @@ def generate_packets(baud, n_packets=50, tmpdir="/tmp"):
     wav_path = os.path.join(tmpdir, f"packet_{baud}.wav")
     cmd = ["gen_packets", "-b", str(baud), "-o", wav_path,
            "-r", str(GEN_AUDIO_FS), "-n", str(n_packets)]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        return np.array([])
     if result.returncode != 0:
         return np.array([])
     if not os.path.exists(wav_path) or os.path.getsize(wav_path) == 0:

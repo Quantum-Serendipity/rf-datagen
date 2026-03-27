@@ -1,5 +1,7 @@
 """Configuration loading from TOML files with CLI override support."""
 
+import hashlib
+import json
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +27,15 @@ class ImpairmentConfig:
         """Return stride to use, resolving 0 -> window_length // 2."""
         return self.window_stride if self.window_stride > 0 else window_length // 2
 
+    def _hash_dict(self):
+        return {
+            "snr_levels": sorted(self.snr_levels),
+            "max_freq_offset": self.max_freq_offset,
+            "scenario_weights": dict(sorted(self.scenario_weights.items())),
+            "window_stride": self.window_stride,
+            "window_power_threshold": self.window_power_threshold,
+        }
+
 
 @dataclass
 class GeneratorConfig:
@@ -49,6 +60,19 @@ class GeneratorConfig:
     codec2_mode: str = "3200"
     freedv_modes: list[str] = field(default_factory=lambda: ["1600", "700C", "700D", "700E"])
 
+    def _hash_dict(self):
+        """Fields that affect generated signal content (not format/layout)."""
+        return {
+            "utterances_per_class": self.utterances_per_class,
+            "rsid_probability": self.rsid_probability,
+            "cw_wpm_range": sorted(self.cw_wpm_range),
+            "messages_per_mode": self.messages_per_mode,
+            "images_per_mode": self.images_per_mode,
+            "packets_per_baud": self.packets_per_baud,
+            "codec2_mode": self.codec2_mode,
+            "freedv_modes": sorted(self.freedv_modes),
+        }
+
 
 @dataclass
 class DatasetConfig:
@@ -57,6 +81,10 @@ class DatasetConfig:
     output_dir: str = "./output"
     seed: int = 42
     workers: int = 0  # 0 = auto; used as fallback for generators without workers
+
+
+class ConfigError(ValueError):
+    """Raised when configuration values are invalid."""
 
 
 @dataclass
@@ -73,6 +101,50 @@ class Config:
         "digivoice": GeneratorConfig(utterances_per_class=120),
     })
 
+    def validate(self):
+        """Validate configuration values. Raises ConfigError on problems."""
+        errors = []
+        if self.dataset.sample_rate <= 0:
+            errors.append("dataset.sample_rate must be > 0")
+        if self.dataset.window_length <= 0:
+            errors.append("dataset.window_length must be > 0")
+        if not self.impairments.snr_levels:
+            errors.append("impairments.snr_levels must not be empty")
+        if self.impairments.window_stride < 0:
+            errors.append("impairments.window_stride must be >= 0")
+        if self.impairments.window_power_threshold < 0:
+            errors.append("impairments.window_power_threshold must be >= 0")
+        for name, gen in self.generators.items():
+            if gen.enabled and gen.samples_per_class <= 0:
+                errors.append(
+                    f"generators.{name}.samples_per_class must be > 0")
+        if errors:
+            raise ConfigError(
+                "Invalid configuration:\n  " + "\n  ".join(errors))
+
+
+def checkpoint_config_hash(gen_cfg: "GeneratorConfig",
+                           imp_cfg: "ImpairmentConfig",
+                           class_name: str,
+                           n_samples: int,
+                           fs: int = FS,
+                           window_len: int = WINDOW_LEN) -> str:
+    """Compute a short hash of parameters that affect checkpoint contents.
+
+    If any of these change, cached checkpoints are stale and must be
+    regenerated.  Returns a 12-char hex string.
+    """
+    blob = {
+        "class": class_name,
+        "n_samples": n_samples,
+        "fs": fs,
+        "window_len": window_len,
+        "generator": gen_cfg._hash_dict(),
+        "impairments": imp_cfg._hash_dict(),
+    }
+    raw = json.dumps(blob, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
 
 def _merge_generator(base: GeneratorConfig, toml_dict: dict) -> GeneratorConfig:
     """Merge TOML dict into a GeneratorConfig."""
@@ -86,6 +158,30 @@ def _merge_generator(base: GeneratorConfig, toml_dict: dict) -> GeneratorConfig:
     if "boost" in toml_dict:
         base.boost = {k: float(v) for k, v in toml_dict["boost"].items()}
     return base
+
+
+_KNOWN_SECTIONS = {"dataset", "impairments", "generators"}
+_KNOWN_DATASET_KEYS = {"sample_rate", "window_length", "output_dir", "seed",
+                       "workers"}
+_KNOWN_IMPAIRMENT_KEYS = {"snr_levels", "max_freq_offset", "window_stride",
+                          "window_power_threshold", "scenarios"}
+_KNOWN_GENERATOR_KEYS = {
+    "enabled", "samples_per_class", "classes", "workers",
+    "utterances_per_class", "voice_cache",
+    "rsid_probability", "cw_wpm_range",
+    "messages_per_mode", "images_per_mode", "packets_per_baud",
+    "codec2_mode", "freedv_modes", "boost",
+}
+
+
+def _warn_unknown_keys(section_name, keys, known):
+    """Log warnings for unrecognized TOML keys (likely typos)."""
+    from .logging_config import get_logger
+    _log = get_logger("config")
+    unknown = set(keys) - known
+    for k in sorted(unknown):
+        _log.warning("Unknown key '%s' in [%s] (ignored — possible typo?)",
+                     k, section_name)
 
 
 def load_config(path: Optional[str | Path] = None) -> Config:
@@ -105,9 +201,13 @@ def load_config(path: Optional[str | Path] = None) -> Config:
     with open(path, "rb") as f:
         raw = tomllib.load(f)
 
+    # Warn on unknown top-level sections
+    _warn_unknown_keys("top-level", raw.keys(), _KNOWN_SECTIONS)
+
     # Dataset section
     if "dataset" in raw:
         d = raw["dataset"]
+        _warn_unknown_keys("dataset", d.keys(), _KNOWN_DATASET_KEYS)
         for key in ("sample_rate", "window_length", "output_dir", "seed",
                      "workers"):
             if key in d:
@@ -116,6 +216,7 @@ def load_config(path: Optional[str | Path] = None) -> Config:
     # Impairments section
     if "impairments" in raw:
         imp = raw["impairments"]
+        _warn_unknown_keys("impairments", imp.keys(), _KNOWN_IMPAIRMENT_KEYS)
         if "snr_levels" in imp:
             cfg.impairments.snr_levels = imp["snr_levels"]
         if "max_freq_offset" in imp:
@@ -134,7 +235,10 @@ def load_config(path: Optional[str | Path] = None) -> Config:
     if "generators" in raw:
         cfg.generators = {}
         for gen_name, gen_dict in raw["generators"].items():
+            _warn_unknown_keys(f"generators.{gen_name}",
+                               gen_dict.keys(), _KNOWN_GENERATOR_KEYS)
             cfg.generators[gen_name] = GeneratorConfig()
             _merge_generator(cfg.generators[gen_name], gen_dict)
 
+    cfg.validate()
     return cfg
