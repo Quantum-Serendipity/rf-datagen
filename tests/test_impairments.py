@@ -8,6 +8,7 @@ from rf_datagen.impairments.effects import (
     add_awgn,
     freq_shift,
     apply_watterson,
+    apply_watterson_sdc,
     apply_rayleigh,
     apply_rician,
     apply_qsb,
@@ -102,6 +103,25 @@ def test_watterson_output_is_complex(tone_1k):
 def test_watterson_length_preserved(tone_1k):
     out = apply_watterson(tone_1k, FS)
     assert len(out) == len(tone_1k)
+
+
+# ---------------------------------------------------------------------------
+# apply_watterson_sdc (falls back to builtin when scikit-dsp-comm absent)
+# ---------------------------------------------------------------------------
+
+def test_watterson_sdc_output_is_complex(tone_1k):
+    out = apply_watterson_sdc(tone_1k, FS)
+    assert np.iscomplexobj(out)
+
+
+def test_watterson_sdc_length_preserved(tone_1k):
+    out = apply_watterson_sdc(tone_1k, FS)
+    assert len(out) == len(tone_1k)
+
+
+def test_watterson_sdc_finite(tone_1k):
+    out = apply_watterson_sdc(tone_1k, FS)
+    assert np.all(np.isfinite(out))
 
 
 # ---------------------------------------------------------------------------

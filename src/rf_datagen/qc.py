@@ -618,6 +618,140 @@ def cmd_dataset(args):
 # Subcommand: report
 # ---------------------------------------------------------------------------
 
+def cmd_probe(args):
+    """GNU Radio probe — analyze, decode, or transform signals at any pipeline stage."""
+    from .generators.synthetic import SYNTHESIZERS
+    from .gnuradio_probe import GnuRadioProbe, ProbePoint
+
+    np.random.seed(args.seed)
+
+    mode = args.mode.upper()
+    probe = GnuRadioProbe(fs=FS)
+
+    # Generate or load signal
+    if args.input:
+        iq = np.fromfile(args.input, dtype=np.complex64).astype(np.complex128)
+        print(f"Loaded {len(iq)} samples from {args.input}")
+    elif mode in SYNTHESIZERS:
+        iq = SYNTHESIZERS[mode](fs=FS, window_len=WINDOW_LEN)
+        print(f"Generated {mode}: {len(iq)} samples ({len(iq)/FS:.3f}s)")
+    else:
+        print(f"ERROR: Unknown mode '{mode}' and no --input file")
+        return 1
+
+    # Determine probe point
+    point_map = {
+        "after-generation": ProbePoint.AFTER_GENERATION,
+        "after-impairments": ProbePoint.AFTER_IMPAIRMENTS,
+        "after-windowing": ProbePoint.AFTER_WINDOWING,
+        "custom": ProbePoint.CUSTOM,
+    }
+    probe_point = point_map.get(args.point, ProbePoint.CUSTOM)
+
+    # Apply impairments if requested
+    if args.snr is not None:
+        from .impairments import normalize_power
+        from .impairments.effects import add_awgn
+        iq = add_awgn(normalize_power(iq), args.snr)
+        probe_point = ProbePoint.AFTER_IMPAIRMENTS
+        print(f"Applied AWGN at SNR={args.snr} dB")
+
+    if args.action == "analyze":
+        result = probe.analyze(iq, fs=FS, mode=mode, probe_point=probe_point)
+        print(f"\n{'='*60}")
+        print(f"Probe Analysis: {mode} @ {probe_point.value}")
+        print(f"{'='*60}")
+        for k, v in sorted(result.measurements.items()):
+            if isinstance(v, float):
+                print(f"  {k:<25s} {v:>12.3f}")
+            else:
+                print(f"  {k:<25s} {v!s:>12s}")
+
+    elif args.action == "decode":
+        print(f"\nAvailable decoders: {probe.available_decoders}")
+        result = probe.decode(iq, fs=FS, decoder=args.decoder, mode=mode,
+                              probe_point=probe_point)
+        print(f"\nDecode result: {'SUCCESS' if result.success else 'FAILED'}")
+        if result.decoded_text:
+            print(f"Decoded text:\n{result.decoded_text}")
+        if result.decode_confidence is not None:
+            print(f"Confidence: {result.decode_confidence:.2f}")
+        if result.error:
+            print(f"Error: {result.error}")
+
+    elif args.action == "transform":
+        params = {}
+        if args.transform_params:
+            for p in args.transform_params:
+                k, v = p.split("=", 1)
+                try:
+                    params[k] = float(v)
+                except ValueError:
+                    params[k] = v
+
+        result = probe.transform(iq, fs=FS, flowgraph=args.flowgraph,
+                                 params=params)
+        if result.success and result.output_iq is not None:
+            print(f"Transform output: {len(result.output_iq)} samples")
+            if args.output:
+                result.output_iq.astype(np.complex64).tofile(args.output)
+                print(f"Saved to: {args.output}")
+            # Also analyze the output
+            analysis = probe.analyze(result.output_iq, fs=FS, mode=mode)
+            print(f"\nPost-transform analysis:")
+            for k, v in sorted(analysis.measurements.items()):
+                if isinstance(v, float):
+                    print(f"  {k:<25s} {v:>12.3f}")
+        else:
+            print(f"Transform failed: {result.error}")
+
+    # Save visualizations if output dir specified
+    if args.output_dir:
+        _require_matplotlib()
+        os.makedirs(args.output_dir, exist_ok=True)
+        prefix = f"{mode}_{probe_point.value}"
+
+        spec_path = os.path.join(args.output_dir, f"{prefix}_spectrogram.png")
+        plot_iq_spectrogram(iq, FS, f"{mode} @ {probe_point.value}", spec_path)
+        print(f"\nSpectrogram: {spec_path}")
+
+        psd_path = os.path.join(args.output_dir, f"{prefix}_psd.png")
+        plot_psd(iq[:min(len(iq), 8192)], FS, f"{mode} PSD", psd_path)
+        print(f"PSD: {psd_path}")
+
+        wav_path = os.path.join(args.output_dir, f"{prefix}_iq.wav")
+        sig_to_wav(iq[:min(len(iq), FS * 5)], FS, wav_path, stereo_iq=True)
+        print(f"WAV: {wav_path}")
+
+    return 0
+
+
+def cmd_benchmark(args):
+    """Benchmark sdr library vs NumPy modulation performance."""
+    from .dsp.modulation_sdr import sdr_available, benchmark as run_benchmark
+
+    if not sdr_available():
+        print("sdr library not installed. Install with: pip install rf-datagen[accel]")
+        print("\nBenchmark skipped — sdr library required for comparison.")
+        return 0
+
+    print(f"Running modulation benchmark ({args.trials} trials, "
+          f"{args.symbols} symbols)...\n")
+
+    results = run_benchmark(n_trials=args.trials, n_symbols=args.symbols)
+
+    print(f"{'Function':<15s} {'NumPy (ms)':>12s} {'sdr (ms)':>12s} {'Speedup':>10s}  Recommendation")
+    print("-" * 65)
+    for name, r in results.items():
+        speedup = r["speedup"]
+        rec = "USE sdr" if speedup >= 2.0 else "keep NumPy"
+        print(f"{name:<15s} {r['numpy_ms']:>12.3f} {r['sdr_ms']:>12.3f} "
+              f"{speedup:>9.1f}x  {rec}")
+
+    print(f"\nThreshold: adopt sdr if speedup >= 2.0x")
+    return 0
+
+
 def cmd_report(args):
     """Generate a self-contained HTML report for one mode."""
     from .generators.synthetic import SYNTHESIZERS

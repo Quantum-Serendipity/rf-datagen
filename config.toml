@@ -72,3 +72,42 @@ utterances_per_class = 120
 voice_cache = "./piper-voices"
 # codec2_mode = "3200"                             # Codec2 bitrate for tier-2 voice (1200/1300/1400/1600/2400/3200)
 # freedv_modes = ["1600", "700C", "700D", "700E"]  # FreeDV sub-modes to generate
+
+[generators.cw]
+enabled = false                # opt-in: overlaps synthetic/fldigi CW; uses ebook2cw CLI
+samples_per_class = 6000
+# cw_wpm_range = [10, 35]     # WPM range for ebook2cw
+# cw_tone_range = [400, 800]  # Tone frequency range (Hz)
+
+[generators.msk144]
+enabled = false                # opt-in: requires msk144gensim CLI
+samples_per_class = 6000
+# messages_per_mode = 200
+
+[generators.minimodem]
+enabled = false                # opt-in: RTTY overlaps synthetic/fldigi; uses minimodem CLI
+samples_per_class = 6000
+# minimodem_modes = ["rtty", "bell103", "bell202"]
+
+[generators.sameeas]
+enabled = false                # opt-in: requires sameeas Python package
+samples_per_class = 6000
+
+[generators.ardop]
+enabled = false                # opt-in: requires ardopcf TNC
+samples_per_class = 6000
+# ardop_speeds = [200, 500, 1000, 2000]
+
+[generators.js8call]
+enabled = false                # opt-in: requires js8call + xvfb + pulseaudio
+samples_per_class = 6000
+
+[generators.op25]
+enabled = false                # opt-in: requires OP25 dv_tx.py + mbelib
+samples_per_class = 6000
+utterances_per_class = 100
+voice_cache = "./piper-voices"
+
+[generators.hacktv]
+enabled = false                # opt-in: requires hacktv CLI
+samples_per_class = 6000

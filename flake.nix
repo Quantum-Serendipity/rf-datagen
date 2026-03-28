@@ -36,6 +36,10 @@
           # Validation decoders
           pkgs.dsdcc pkgs.multimon-ng
           pkgs.whisper-cpp-vulkan
+          # Phase 1 optional CLI tools
+          pkgs.ebook2cw pkgs.minimodem
+          # Phase 2 optional CLI tools
+          pkgs.js8call
         ];
       };
     in {

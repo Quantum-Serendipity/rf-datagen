@@ -4,10 +4,12 @@ from .analytic import hilbert_analytic, audio_to_iq
 from .modulation import (gfsk_mod, fsk_mod, ook_mod, psk_mod,
                           _4fsk_mod, _gmsk_mod, ofdm_carriers)
 from .filters import bandpass_filter, rrc_filter, gaussian_filter
+from .modulation_sdr import sdr_available, get_fast_modulator, benchmark as sdr_benchmark
 
 __all__ = [
     "hilbert_analytic", "audio_to_iq",
     "gfsk_mod", "fsk_mod", "ook_mod", "psk_mod",
     "_4fsk_mod", "_gmsk_mod", "ofdm_carriers",
     "bandpass_filter", "rrc_filter", "gaussian_filter",
+    "sdr_available", "get_fast_modulator", "sdr_benchmark",
 ]

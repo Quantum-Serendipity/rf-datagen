@@ -6,7 +6,8 @@ from ..config import ImpairmentConfig
 from ..constants import FS, WINDOW_LEN
 from .effects import (
     normalize_power, add_awgn, freq_shift,
-    apply_watterson, apply_rayleigh, apply_rician,
+    apply_watterson, apply_watterson_sdc,
+    apply_rayleigh, apply_rician,
     apply_qsb, apply_atmospheric_noise,
     apply_iq_imbalance, apply_phase_noise, apply_dc_offset,
     apply_adc_quantization, apply_clock_jitter,
@@ -26,6 +27,13 @@ def configure(cfg: ImpairmentConfig):
     """Set impairment config for the pipeline. Call before apply_impairments()."""
     global _config
     _config = cfg
+
+
+def _watterson(sig, fs=FS):
+    """Dispatch to the configured Watterson model."""
+    if _config.watterson_model == "sdc":
+        return apply_watterson_sdc(sig, fs)
+    return apply_watterson(sig, fs)
 
 
 # Real multi-signal interference pool (optional)
@@ -166,7 +174,7 @@ def _apply_scenario_hf_clean(sig, snr_db, fs=FS):
 
 def _apply_scenario_hf_good(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
-    sig = apply_watterson(sig, fs)
+    sig = _watterson(sig, fs)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
     if np.random.random() < 0.2:
         sig = apply_qsb(sig, fs)
@@ -184,7 +192,7 @@ def _apply_scenario_hf_good(sig, snr_db, fs=FS):
 
 def _apply_scenario_hf_poor(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
-    sig = apply_watterson(sig, fs)
+    sig = _watterson(sig, fs)
     if np.random.random() < 0.4:
         sig = apply_qsb(sig, fs)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
@@ -259,7 +267,7 @@ def _apply_scenario_sdr_desktop(sig, snr_db, fs=FS):
 def _apply_scenario_contest_crowded(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
     if np.random.random() < 0.5:
-        sig = apply_watterson(sig, fs)
+        sig = _watterson(sig, fs)
     else:
         sig = apply_rayleigh(sig)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
@@ -284,7 +292,7 @@ def _apply_scenario_overdriven(sig, snr_db, fs=FS):
     tx = TransmitterModel(profile)
     sig = tx.apply(sig, fs)
     if np.random.random() < 0.5:
-        sig = apply_watterson(sig, fs)
+        sig = _watterson(sig, fs)
     else:
         sig = apply_rayleigh(sig)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
@@ -303,7 +311,7 @@ def _apply_scenario_poorly_operated(sig, snr_db, fs=FS):
     tx = TransmitterModel("POORLY_OPERATED")
     sig = tx.apply(sig, fs)
     if np.random.random() < 0.5:
-        sig = apply_watterson(sig, fs)
+        sig = _watterson(sig, fs)
     else:
         sig = apply_rayleigh(sig)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
@@ -320,7 +328,7 @@ def _apply_scenario_vintage(sig, snr_db, fs=FS):
     tx = TransmitterModel("VINTAGE")
     sig = tx.apply(sig, fs)
     if np.random.random() < 0.5:
-        sig = apply_watterson(sig, fs)
+        sig = _watterson(sig, fs)
     else:
         sig = apply_rayleigh(sig)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
@@ -339,7 +347,7 @@ def _apply_scenario_near_far(sig, snr_db, fs=FS):
     if np.random.random() < 0.7:
         sig = apply_receiver_intermod(sig, fs)
     if np.random.random() < 0.5:
-        sig = apply_watterson(sig, fs)
+        sig = _watterson(sig, fs)
     else:
         sig = apply_rayleigh(sig)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)

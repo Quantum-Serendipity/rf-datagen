@@ -20,6 +20,7 @@ class ImpairmentConfig:
         "contest_crowded": 0.10, "overdriven": 0.05, "poorly_operated": 0.05,
         "vintage": 0.03, "near_far": 0.02, "auroral": 0.02,
     })
+    watterson_model: str = "builtin"  # "builtin" or "sdc" (scikit-dsp-comm)
     window_stride: int = 0  # 0 = auto (window_length // 2)
     window_power_threshold: float = 0.001
 
@@ -32,6 +33,7 @@ class ImpairmentConfig:
             "snr_levels": sorted(self.snr_levels),
             "max_freq_offset": self.max_freq_offset,
             "scenario_weights": dict(sorted(self.scenario_weights.items())),
+            "watterson_model": self.watterson_model,
             "window_stride": self.window_stride,
             "window_power_threshold": self.window_power_threshold,
         }
@@ -59,6 +61,12 @@ class GeneratorConfig:
     # Digivoice generator
     codec2_mode: str = "3200"
     freedv_modes: list[str] = field(default_factory=lambda: ["1600", "700C", "700D", "700E"])
+    # CW CLI generator
+    cw_tone_range: list[int] = field(default_factory=lambda: [400, 800])
+    # Minimodem generator
+    minimodem_modes: list[str] = field(default_factory=lambda: ["rtty", "bell103", "bell202"])
+    # ARDOP generator
+    ardop_speeds: list[int] = field(default_factory=lambda: [200, 500, 1000, 2000])
 
     def _hash_dict(self):
         """Fields that affect generated signal content (not format/layout)."""
@@ -71,6 +79,9 @@ class GeneratorConfig:
             "packets_per_baud": self.packets_per_baud,
             "codec2_mode": self.codec2_mode,
             "freedv_modes": sorted(self.freedv_modes),
+            "cw_tone_range": sorted(self.cw_tone_range),
+            "minimodem_modes": sorted(self.minimodem_modes),
+            "ardop_speeds": sorted(self.ardop_speeds),
         }
 
 
@@ -99,6 +110,14 @@ class Config:
         "sstv": GeneratorConfig(),
         "packet": GeneratorConfig(),
         "digivoice": GeneratorConfig(utterances_per_class=120),
+        "cw": GeneratorConfig(enabled=False),
+        "msk144": GeneratorConfig(enabled=False),
+        "minimodem": GeneratorConfig(enabled=False),
+        "sameeas": GeneratorConfig(enabled=False),
+        "ardop": GeneratorConfig(enabled=False),
+        "js8call": GeneratorConfig(enabled=False),
+        "op25": GeneratorConfig(enabled=False),
+        "hacktv": GeneratorConfig(enabled=False),
     })
 
     def validate(self):
@@ -152,7 +171,8 @@ def _merge_generator(base: GeneratorConfig, toml_dict: dict) -> GeneratorConfig:
                 "utterances_per_class", "voice_cache",
                 "rsid_probability", "cw_wpm_range",
                 "messages_per_mode", "images_per_mode", "packets_per_baud",
-                "codec2_mode", "freedv_modes"):
+                "codec2_mode", "freedv_modes",
+                "cw_tone_range", "minimodem_modes", "ardop_speeds"):
         if key in toml_dict:
             setattr(base, key, toml_dict[key])
     if "boost" in toml_dict:
@@ -163,14 +183,15 @@ def _merge_generator(base: GeneratorConfig, toml_dict: dict) -> GeneratorConfig:
 _KNOWN_SECTIONS = {"dataset", "impairments", "generators"}
 _KNOWN_DATASET_KEYS = {"sample_rate", "window_length", "output_dir", "seed",
                        "workers"}
-_KNOWN_IMPAIRMENT_KEYS = {"snr_levels", "max_freq_offset", "window_stride",
-                          "window_power_threshold", "scenarios"}
+_KNOWN_IMPAIRMENT_KEYS = {"snr_levels", "max_freq_offset", "watterson_model",
+                          "window_stride", "window_power_threshold", "scenarios"}
 _KNOWN_GENERATOR_KEYS = {
     "enabled", "samples_per_class", "classes", "workers",
     "utterances_per_class", "voice_cache",
     "rsid_probability", "cw_wpm_range",
     "messages_per_mode", "images_per_mode", "packets_per_baud",
     "codec2_mode", "freedv_modes", "boost",
+    "cw_tone_range", "minimodem_modes", "ardop_speeds",
 }
 
 
@@ -221,6 +242,8 @@ def load_config(path: Optional[str | Path] = None) -> Config:
             cfg.impairments.snr_levels = imp["snr_levels"]
         if "max_freq_offset" in imp:
             cfg.impairments.max_freq_offset = imp["max_freq_offset"]
+        if "watterson_model" in imp:
+            cfg.impairments.watterson_model = imp["watterson_model"]
         if "window_stride" in imp:
             cfg.impairments.window_stride = imp["window_stride"]
         if "window_power_threshold" in imp:

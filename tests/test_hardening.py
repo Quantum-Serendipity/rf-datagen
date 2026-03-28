@@ -182,7 +182,8 @@ class TestGeneratorConfigHashDict:
         d = GeneratorConfig()._hash_dict()
         expected = {"utterances_per_class", "rsid_probability",
                     "cw_wpm_range", "messages_per_mode", "images_per_mode",
-                    "packets_per_baud", "codec2_mode", "freedv_modes"}
+                    "packets_per_baud", "codec2_mode", "freedv_modes",
+                    "cw_tone_range", "minimodem_modes", "ardop_speeds"}
         assert set(d.keys()) == expected
 
     def test_excludes_non_content_fields(self):
@@ -197,7 +198,7 @@ class TestImpairmentConfigHashDict:
     def test_keys(self):
         d = ImpairmentConfig()._hash_dict()
         expected = {"snr_levels", "max_freq_offset", "scenario_weights",
-                    "window_stride", "window_power_threshold"}
+                    "watterson_model", "window_stride", "window_power_threshold"}
         assert set(d.keys()) == expected
 
     def test_sorted_snr(self):

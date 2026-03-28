@@ -285,6 +285,114 @@ APRS_MESSAGES = [
 ]
 
 
+# JS8Call message patterns
+JS8_MESSAGES = [
+    "@HB HEARTBEAT",
+    "@APRSIS GRID",
+    "CQ CQ CQ DE W1AW W1AW",
+    "CQ CQ CQ DE K3LR K3LR",
+    "CQ DX DE VE3XYZ VE3XYZ",
+    "W1AW: K3LR SNR +05",
+    "K3LR: W1AW SNR -02",
+    "W1AW: K3LR ACK",
+    "N0CALL: CQ CQ CQ DE N0CALL",
+    "W6ABC: DL1ABC RR 73",
+    "@HB AUTO RELAY SPOT",
+    "@APRSIS CMD :W1AW :GRID?",
+    "VE3XYZ: QSL VIA LOTW 73",
+    "DL1ABC: W1AW INFO? ",
+    "W1AW: DL1ABC INFO QTH CT PWR 100W ANT 3 EL YAGI",
+    "JA1ABC: CQ ASIA DE JA1ABC",
+    "@HB HB W1AW EM48",
+    "K3LR: MSG W1AW NICE QSO 73",
+    "W1AW: HEARING K3LR VE3XYZ DL1ABC JA1ABC",
+    "N0CALL: @ALLCALL? QST NET AT 0100Z ON 7078",
+]
+
+JS8_HEARTBEAT_TEMPLATES = [
+    "@HB HEARTBEAT {call} {grid}",
+    "@HB HB {call} {grid}",
+]
+
+JS8_DIRECTED_TEMPLATES = [
+    "{call1}: {call2} SNR {snr}",
+    "{call1}: {call2} ACK",
+    "{call1}: {call2} RR 73",
+    "{call1}: {call2} GRID?",
+    "{call1}: {call2} INFO?",
+    "{call1}: {call2} MSG TU FER QSO 73",
+    "{call1}: {call2} HEARING {call3}",
+]
+
+
+def gen_js8_message():
+    """Generate a random JS8Call message (heartbeat, directed, or CQ)."""
+    r = np.random.random()
+    c1 = np.random.choice(CALLSIGNS)
+    c2 = np.random.choice(CALLSIGNS)
+    grid = np.random.choice(GRID_SQUARES)
+
+    if r < 0.25:
+        # Heartbeat
+        tmpl = np.random.choice(JS8_HEARTBEAT_TEMPLATES)
+        return tmpl.format(call=c1, grid=grid)
+    elif r < 0.60:
+        # Directed message
+        c3 = np.random.choice(CALLSIGNS)
+        snr = np.random.choice(["-15", "-10", "-05", "+00", "+05", "+10", "+15"])
+        tmpl = np.random.choice(JS8_DIRECTED_TEMPLATES)
+        return tmpl.format(call1=c1, call2=c2, call3=c3, snr=snr)
+    elif r < 0.80:
+        # CQ
+        return f"CQ CQ CQ DE {c1} {c1}"
+    else:
+        # Random from pool
+        return np.random.choice(JS8_MESSAGES)
+
+
+# SAME/EAS constants
+SAME_ORIGINATORS = ["PEP", "CIV", "WXR", "EAS"]
+SAME_EVENT_CODES = [
+    "TOR", "SVR", "FFW", "SVS", "SMW", "SPS", "FRW", "EWW",
+    "HWA", "HUA", "HUW", "TSA", "TSW", "WSW", "BZW", "WCW",
+    "RWT", "DMO", "ADR", "NIC", "NPT", "RMT", "EAN", "EAT",
+]
+SAME_FIPS = [
+    "029510", "017031", "048201", "006037", "036061",
+    "012086", "042101", "025025", "039049", "051810",
+    "013121", "024005", "055079", "034013", "008031",
+]
+SAME_CALLSIGNS = [
+    "KEAX/NWS", "KLOX/NWS", "WACN/NWS", "KMOX/NWS",
+    "KGYX/NWS", "WJON/NWS", "KLBX/NWS", "KMPX/NWS",
+]
+
+
+def gen_same_message():
+    """Generate a random SAME/EAS header string."""
+    orig = np.random.choice(SAME_ORIGINATORS)
+    event = np.random.choice(SAME_EVENT_CODES)
+    n_areas = np.random.randint(1, 4)
+    areas = "-".join(np.random.choice(SAME_FIPS, n_areas, replace=False))
+    # Duration in HHMM format
+    hours = np.random.randint(0, 3)
+    minutes = np.random.choice([0, 15, 30, 45])
+    duration = f"{hours:02d}{minutes:02d}"
+    callsign = np.random.choice(SAME_CALLSIGNS)
+    return f"ZCZC-{orig}-{event}-{areas}+{duration}-{callsign}-"
+
+
+def gen_minimodem_text(mode):
+    """Generate text content for minimodem modes."""
+    if mode == "RTTY":
+        return get_text_for_mode("RTTY", target_chars=2000)
+    # Bell modes — short teletype-style messages
+    parts = []
+    for _ in range(np.random.randint(5, 15)):
+        parts.append(np.random.choice(COMMON_TEXTS))
+    return "\n".join(parts)
+
+
 def gen_contest_qso():
     """Generate a realistic contest QSO exchange."""
     c1, c2 = np.random.choice(CALLSIGNS, 2, replace=False)

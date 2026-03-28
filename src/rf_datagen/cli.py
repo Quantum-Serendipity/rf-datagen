@@ -303,7 +303,7 @@ def cmd_qc(args):
     from . import qc
 
     if args.qc_command is None:
-        print("Usage: rf-datagen qc {text,audio,modulated,impaired,dataset,report}")
+        print("Usage: rf-datagen qc {text,audio,modulated,impaired,dataset,report,probe,benchmark}")
         return 1
 
     dispatch = {
@@ -313,6 +313,8 @@ def cmd_qc(args):
         "impaired": qc.cmd_impaired,
         "dataset": qc.cmd_dataset,
         "report": qc.cmd_report,
+        "probe": qc.cmd_probe,
+        "benchmark": qc.cmd_benchmark,
     }
     return dispatch[args.qc_command](args)
 
@@ -521,6 +523,39 @@ def main():
     p_qc_rpt.add_argument("--voice-cache",
                            default="artifacts/data/piper-voices")
     p_qc_rpt.add_argument("--seed", type=int, default=42)
+
+    p_qc_probe = qc_sub.add_parser("probe",
+                                     help="GNU Radio probe — MITM debug utility")
+    p_qc_probe.add_argument("--mode", required=True, help="Signal mode")
+    p_qc_probe.add_argument("--action", default="analyze",
+                            choices=["analyze", "decode", "transform"],
+                            help="Probe action (default: analyze)")
+    p_qc_probe.add_argument("--point", default="after-generation",
+                            choices=["after-generation", "after-impairments",
+                                     "after-windowing", "custom"],
+                            help="Pipeline tap point")
+    p_qc_probe.add_argument("--snr", type=int, default=None,
+                            help="Apply AWGN at this SNR before probing")
+    p_qc_probe.add_argument("--decoder", default=None,
+                            help="Decoder for decode action")
+    p_qc_probe.add_argument("--flowgraph", default=None,
+                            help="Flowgraph for transform action")
+    p_qc_probe.add_argument("--transform-params", nargs="*",
+                            help="Transform params as key=value pairs")
+    p_qc_probe.add_argument("--input", default=None,
+                            help="Input IQ file (complex64) instead of generating")
+    p_qc_probe.add_argument("--output", default=None,
+                            help="Output IQ file for transform results")
+    p_qc_probe.add_argument("--output-dir", default=None,
+                            help="Output dir for visualizations")
+    p_qc_probe.add_argument("--seed", type=int, default=42)
+
+    p_qc_bench = qc_sub.add_parser("benchmark",
+                                      help="Benchmark sdr vs NumPy modulation")
+    p_qc_bench.add_argument("--trials", type=int, default=20,
+                            help="Number of trials per function (default: 20)")
+    p_qc_bench.add_argument("--symbols", type=int, default=500,
+                            help="Number of symbols per trial (default: 500)")
 
     args = parser.parse_args()
 

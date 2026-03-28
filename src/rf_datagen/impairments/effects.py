@@ -65,6 +65,42 @@ def apply_watterson(sig, fs=FS):
     return g1 * sig + 0.5 * g2 * delayed
 
 
+def apply_watterson_sdc(sig, fs=FS):
+    """Watterson HF channel using scikit-dsp-comm for higher-fidelity simulation.
+
+    Uses sk_dsp_comm.multipath_fading.FadingModel with ITU-R F.1487 profiles.
+    Falls back to the built-in apply_watterson() if scikit-dsp-comm is unavailable.
+    """
+    try:
+        from sk_dsp_comm.multipath_fading import FadingModel
+    except ImportError:
+        return apply_watterson(sig, fs)
+
+    profiles = [
+        # (delay_spread_ms, doppler_hz, N_taps, description)
+        (0.5, 0.1, 2, "good"),
+        (1.0, 0.5, 2, "moderate"),
+        (2.0, 1.0, 2, "poor"),
+        (2.0, 2.0, 3, "disturbed"),
+    ]
+    delay_ms, doppler_hz, n_taps, _ = profiles[np.random.randint(0, len(profiles))]
+
+    try:
+        chan = FadingModel(
+            N_taps=n_taps,
+            fd=doppler_hz,
+            fs=fs,
+            power_profile=tuple(1.0 / n_taps for _ in range(n_taps)),
+            delay_profile=tuple(i * delay_ms * 1e-3 for i in range(n_taps)),
+        )
+        out = np.zeros_like(sig)
+        for i in range(len(sig)):
+            out[i] = chan.model_step(sig[i])
+        return out
+    except Exception:
+        return apply_watterson(sig, fs)
+
+
 def apply_rayleigh(sig):
     """Simplified 2-path Rayleigh flat fading (HF propagation)."""
     g1 = (np.random.randn() + 1j * np.random.randn()) / np.sqrt(2)

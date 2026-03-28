@@ -16,5 +16,11 @@ SIGNAL_LABELS = [
     "QPSK", "PSK125", "8PSK", "FSQ", "IFKP", "THROB",
     # Gen4.1 additions — digital voice
     "FREEDV", "M17", "DMR", "DSTAR", "YSF", "P25", "NXDN",
+    # Gen4.2 additions — expanded modes
+    "MSK144", "EAS", "ARDOP", "BELL103", "BELL202",
+    # Gen4.3 additions — moderate integration
+    "ATV",
+    # Gen4.4 additions — expanded synthetic + GNU Radio ecosystem
+    "LORA", "POCSAG", "FLEX", "HDRADIO", "DTMF", "DRM",
 ]
-NUM_CLASSES = len(SIGNAL_LABELS)  # 39
+NUM_CLASSES = len(SIGNAL_LABELS)  # 51

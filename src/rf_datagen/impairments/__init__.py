@@ -2,7 +2,8 @@
 
 from .effects import (
     normalize_power, add_awgn, freq_shift,
-    apply_watterson, apply_rayleigh, apply_rician,
+    apply_watterson, apply_watterson_sdc,
+    apply_rayleigh, apply_rician,
     apply_qsb, apply_atmospheric_noise, apply_clock_drift,
     apply_iq_imbalance, apply_phase_noise, apply_dc_offset,
     apply_adc_quantization, apply_clock_jitter,
@@ -21,7 +22,8 @@ from .scenarios import (
 
 __all__ = [
     "normalize_power", "add_awgn", "freq_shift",
-    "apply_watterson", "apply_rayleigh", "apply_rician",
+    "apply_watterson", "apply_watterson_sdc",
+    "apply_rayleigh", "apply_rician",
     "apply_qsb", "apply_atmospheric_noise",
     "apply_scenario", "apply_scenario_continuous", "apply_impairments",
     "configure_impairments",
