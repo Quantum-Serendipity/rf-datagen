@@ -67,6 +67,33 @@ class MLValidationRunner:
             return {}
         return {self.model_name: _BACKENDS[self.model_name]}
 
+    def _load_from_dataset(self, signal_name, n_samples, dataset_path,
+                           tags_labels):
+        """Load IQ windows from a generated dataset instead of synthesizing.
+
+        Parameters
+        ----------
+        signal_name : str
+            Signal class to load.
+        n_samples : int
+            Max windows to load.
+        dataset_path : str
+            Path to assembled .npy file.
+        tags_labels : list[str]
+            Per-row class labels from tags CSV (same length as .npy axis 0).
+
+        Returns
+        -------
+        list[np.ndarray] : IQ windows for this class.
+        """
+        indices = [i for i, l in enumerate(tags_labels) if l == signal_name]
+        if not indices:
+            return []
+        chosen = np.random.choice(
+            indices, min(n_samples, len(indices)), replace=False)
+        iq_mmap = np.load(dataset_path, mmap_mode="r")
+        return [np.array(iq_mmap[i]) for i in chosen]
+
     def _generate_samples(self, signal_name, n_samples, snr_db=None):
         """Generate IQ samples for a signal class using the synth pipeline."""
         from ..qc import _all_synthesizers

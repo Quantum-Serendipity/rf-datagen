@@ -378,6 +378,12 @@ def cmd_validate_ml(args):
     return 0
 
 
+def _cmd_e2e(args):
+    """Lazy import wrapper for e2e pipeline."""
+    from .e2e import cmd_e2e
+    return cmd_e2e(args)
+
+
 def cmd_qc(args):
     """Dispatch to QC inspection subcommands."""
     from . import qc
@@ -552,6 +558,36 @@ def main():
     p_vml.add_argument("--threshold", type=float, default=0.5,
                        help="Min accuracy to pass (default: 0.5)")
 
+    # e2e — end-to-end validation pipeline
+    p_e2e = sub.add_parser("e2e",
+                           help="End-to-end generate + validate pipeline")
+    p_e2e.add_argument("--config", "-c", default=None,
+                       help="Path to config.toml")
+    p_e2e.add_argument("--output", "-o", default=None,
+                       help="Output directory")
+    p_e2e.add_argument("--domains", "-d", default=None,
+                       help="Comma-separated domains: narrowband,moderate,wideband")
+    p_e2e.add_argument("--skip-generate", action="store_true",
+                       help="Use existing output (skip generation)")
+    p_e2e.add_argument("--skip-roundtrip", action="store_true",
+                       help="Skip round-trip decode tests")
+    p_e2e.add_argument("--skip-ml", action="store_true",
+                       help="Skip ML classification (needs torch)")
+    p_e2e.add_argument("--spectral-samples", type=int, default=20,
+                       help="Windows per class for spectral checks (default: 20)")
+    p_e2e.add_argument("--ml-samples", type=int, default=30,
+                       help="Windows per class for ML (default: 30)")
+    p_e2e.add_argument("--strict", action="store_true",
+                       help="Fail on advisory gate failures too")
+    p_e2e.add_argument("--json-report", default=None,
+                       help="Custom path for JSON report")
+    p_e2e.add_argument("--html-report", default=None,
+                       help="Generate HTML report at this path")
+    p_e2e.add_argument("--seed", "-s", type=int, default=42,
+                       help="Random seed")
+    p_e2e.add_argument("--verbose", "-v", action="store_true")
+    p_e2e.add_argument("--quiet", "-q", action="store_true")
+
     # inspect
     p_ins = sub.add_parser("inspect",
                            help="Plot spectrogram/stats for a class from dataset")
@@ -673,6 +709,7 @@ def main():
         "validate": cmd_validate,
         "validate-roundtrip": cmd_validate_roundtrip,
         "validate-ml": cmd_validate_ml,
+        "e2e": _cmd_e2e,
         "inspect": cmd_inspect,
         "qc": cmd_qc,
     }

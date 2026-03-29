@@ -1,4 +1,5 @@
 .PHONY: generate generate-moderate generate-wideband generate-all list validate clean
+.PHONY: e2e e2e-quick e2e-validate e2e-ml
 .PHONY: validate-roundtrip validate-all validate-quick
 .PHONY: validate-wsjtx validate-packet validate-freedv validate-digivoice
 .PHONY: validate-analog validate-analog-stt validate-cw validate-sstv
@@ -26,6 +27,24 @@ generate-all:
 
 list:
 	python -m rf_datagen.cli list
+
+# ---------------------------------------------------------------------------
+# End-to-end pipeline
+# ---------------------------------------------------------------------------
+
+e2e:
+	python -m rf_datagen.cli e2e -c config.toml --domains narrowband,moderate,wideband
+
+e2e-quick:
+	python -m rf_datagen.cli e2e -c config.toml --domains narrowband \
+		--skip-ml --skip-roundtrip --spectral-samples 5
+
+e2e-validate:
+	python -m rf_datagen.cli e2e --skip-generate --domains narrowband,moderate,wideband
+
+e2e-ml:
+	python -m rf_datagen.cli e2e -c config.toml --domains narrowband \
+		--skip-roundtrip --ml-samples 50
 
 # ---------------------------------------------------------------------------
 # Dataset validation
