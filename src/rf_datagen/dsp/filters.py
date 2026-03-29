@@ -53,3 +53,19 @@ def gaussian_filter(bt, sps, n_taps=None):
     h = alpha * np.exp(-(alpha * t) ** 2)
     h /= h.sum()
     return h
+
+
+def gaussian_filter_sigma(sigma_samples, n_taps):
+    """Gaussian filter parameterized by sigma in samples.
+
+    Args:
+        sigma_samples: Standard deviation in samples.
+        n_taps: Filter length.
+
+    Returns:
+        Normalized Gaussian kernel (sums to 1).
+    """
+    t = np.arange(n_taps) - n_taps // 2
+    h = np.exp(-t ** 2 / (2 * sigma_samples ** 2))
+    h /= h.sum()
+    return h

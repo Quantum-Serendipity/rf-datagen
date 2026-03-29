@@ -12,6 +12,12 @@ from rf_datagen.dsp import (
     _4fsk_mod,
     _gmsk_mod,
     ofdm_carriers,
+    chirp_mod,
+    dsss_mod,
+    oqpsk_mod,
+    ppm_mod,
+    _pi4dqpsk_mod,
+    ofdm_full,
     bandpass_filter,
     rrc_filter,
     gaussian_filter,
@@ -229,6 +235,239 @@ class TestOFDM:
                     spectrum[i] > threshold):
                 peaks.append(freqs[i])
         assert len(peaks) >= 6
+
+
+class TestChirpMod:
+    """Chirp modulator tests."""
+
+    BW = 2000       # 2 kHz sweep bandwidth
+    PULSE_DUR = 0.01  # 10 ms pulse
+    PRF = 20        # 20 Hz pulse repetition frequency
+    N_PULSES = 5
+
+    def test_chirp_output_is_complex(self):
+        out = chirp_mod(bw=self.BW, pulse_dur=self.PULSE_DUR,
+                        prf=self.PRF, n_pulses=self.N_PULSES, fs=FS)
+        assert np.iscomplexobj(out)
+
+    def test_chirp_output_length(self):
+        out = chirp_mod(bw=self.BW, pulse_dur=self.PULSE_DUR,
+                        prf=self.PRF, n_pulses=self.N_PULSES, fs=FS)
+        pri_samples = max(1, int((1 / self.PRF) * FS))
+        expected = self.N_PULSES * pri_samples
+        assert len(out) == expected
+
+    def test_chirp_spectral_energy_within_bandwidth(self):
+        out = chirp_mod(bw=self.BW, pulse_dur=self.PULSE_DUR,
+                        prf=self.PRF, n_pulses=self.N_PULSES, fs=FS)
+        spectrum = np.fft.fftshift(np.abs(np.fft.fft(out)) ** 2)
+        freqs = np.fft.fftshift(np.fft.fftfreq(len(out), 1 / FS))
+        in_band = np.abs(freqs) <= self.BW / 2
+        total_energy = spectrum.sum()
+        in_band_energy = spectrum[in_band].sum()
+        # Most spectral energy should be within chirp bandwidth
+        assert in_band_energy / total_energy > 0.80
+
+
+class TestDSSS:
+    """DSSS modulator tests."""
+
+    CHIP_CODE = np.array([1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 1], dtype=np.uint8)
+    CHIPS_PER_BIT = 11
+    CHIP_RATE = 1000.0
+
+    def test_dsss_output_is_complex(self, sample_bits):
+        out = dsss_mod(data_bits=sample_bits, chip_code=self.CHIP_CODE,
+                       chips_per_bit=self.CHIPS_PER_BIT, fs=FS,
+                       chip_rate=self.CHIP_RATE)
+        assert np.iscomplexobj(out)
+
+    def test_dsss_bandwidth_spreads_to_chip_rate(self, sample_bits):
+        out = dsss_mod(data_bits=sample_bits, chip_code=self.CHIP_CODE,
+                       chips_per_bit=self.CHIPS_PER_BIT, fs=FS,
+                       chip_rate=self.CHIP_RATE)
+        spectrum = np.fft.fftshift(np.abs(np.fft.fft(out)) ** 2)
+        freqs = np.fft.fftshift(np.fft.fftfreq(len(out), 1 / FS))
+        # Spectral energy should spread across the chip_rate bandwidth:
+        # the main lobe of a rectangular-chip DSSS signal is 2*chip_rate wide.
+        # Verify significant energy exists beyond data-only bandwidth.
+        in_chip_band = np.abs(freqs) <= self.CHIP_RATE
+        total = spectrum.sum()
+        in_band_energy = spectrum[in_chip_band].sum()
+        # Main lobe should contain a substantial fraction of total energy
+        assert in_band_energy / total > 0.40
+        # But energy should NOT be concentrated in a narrow band (< chip_rate/4),
+        # confirming that spreading occurred.
+        narrow = np.abs(freqs) <= self.CHIP_RATE / 4
+        narrow_energy = spectrum[narrow].sum()
+        assert narrow_energy / total < 0.60
+
+    def test_dsss_spreading_ratio_output_length(self, sample_bits):
+        out = dsss_mod(data_bits=sample_bits, chip_code=self.CHIP_CODE,
+                       chips_per_bit=self.CHIPS_PER_BIT, fs=FS,
+                       chip_rate=self.CHIP_RATE)
+        spc = max(1, int(FS / self.CHIP_RATE))
+        expected = len(sample_bits) * self.CHIPS_PER_BIT * spc
+        assert len(out) == expected
+
+
+class TestOQPSK:
+    """Offset QPSK modulator tests."""
+
+    SYM_RATE = 100
+
+    def test_oqpsk_output_is_complex(self):
+        symbols = np.array([0, 1, 2, 3] * 50, dtype=np.uint8)
+        out = oqpsk_mod(symbols=symbols, sym_rate=self.SYM_RATE, fs=FS)
+        assert np.iscomplexobj(out)
+
+    def test_oqpsk_iq_half_symbol_offset(self):
+        """I and Q channels should have max cross-correlation at half-symbol offset."""
+        symbols = np.array([0, 1, 2, 3] * 50, dtype=np.uint8)
+        out = oqpsk_mod(symbols=symbols, sym_rate=self.SYM_RATE, fs=FS)
+        sps = max(1, int(FS / self.SYM_RATE))
+        half_sym = sps  # half of 2*sps symbol period
+        i_sig = out.real
+        q_sig = out.imag
+        # Cross-correlate at zero offset vs half-symbol offset
+        max_lag = 2 * sps
+        n = min(len(i_sig), len(q_sig)) - max_lag
+        corr_at_offset = np.abs(np.sum(
+            i_sig[:n] * q_sig[half_sym:half_sym + n]))
+        corr_at_zero = np.abs(np.sum(
+            i_sig[:n] * q_sig[:n]))
+        # Cross-correlation at half-symbol offset should exceed zero offset
+        assert corr_at_offset > corr_at_zero
+
+
+class TestPPM:
+    """PPM modulator tests."""
+
+    SLOT_DUR = 1 / 100  # 10 ms slot
+
+    def test_ppm_output_is_complex(self, sample_bits):
+        out = ppm_mod(bits=sample_bits, slot_dur=self.SLOT_DUR, fs=FS)
+        assert np.iscomplexobj(out)
+
+    def test_ppm_bit_to_position_mapping(self):
+        """bit=1 -> energy in first half, bit=0 -> energy in second half."""
+        bits = np.array([1, 0, 1, 1, 0], dtype=np.uint8)
+        out = ppm_mod(bits=bits, slot_dur=self.SLOT_DUR, fs=FS)
+        sps = max(2, int(self.SLOT_DUR * FS))
+        half = sps // 2
+
+        for i, bit in enumerate(bits):
+            start = i * sps
+            first_half_energy = np.sum(np.abs(out[start:start + half]) ** 2)
+            second_half_energy = np.sum(
+                np.abs(out[start + half:start + sps]) ** 2)
+            if bit == 1:
+                assert first_half_energy > second_half_energy
+            else:
+                assert second_half_energy > first_half_energy
+
+
+class TestPi4DQPSK:
+    """pi/4-DQPSK modulator tests."""
+
+    SYM_RATE = 4800
+
+    def test_pi4dqpsk_output_is_complex(self, sample_dibits):
+        out = _pi4dqpsk_mod(dibits=sample_dibits, sym_rate=self.SYM_RATE,
+                            fs=FS)
+        assert np.iscomplexobj(out)
+
+    def test_pi4dqpsk_output_length(self, sample_dibits):
+        out = _pi4dqpsk_mod(dibits=sample_dibits, sym_rate=self.SYM_RATE,
+                            fs=FS)
+        sps = max(1, int(FS / self.SYM_RATE))
+        expected = len(sample_dibits) * sps
+        assert len(out) == expected
+
+    def test_pi4dqpsk_phase_rotation_per_dibit(self, sample_dibits):
+        """Phase should change between consecutive symbols."""
+        out = _pi4dqpsk_mod(dibits=sample_dibits, sym_rate=self.SYM_RATE,
+                            fs=FS)
+        sps = max(1, int(FS / self.SYM_RATE))
+        # Sample phase at mid-symbol points
+        mid_phases = []
+        for i in range(len(sample_dibits)):
+            mid = i * sps + sps // 2
+            mid_phases.append(np.angle(out[mid]))
+        mid_phases = np.array(mid_phases)
+        # Phase differences between successive symbols should be non-zero
+        diffs = np.abs(np.diff(mid_phases))
+        # With random dibits, most phase changes should be substantial
+        assert np.mean(diffs > 0.1) > 0.5
+
+
+class TestOFDMFull:
+    """Full OFDM with CP, pilots, and DC null tests."""
+
+    N_SC = 64
+    SC_SPACING = 15.625
+    CP_LEN = 16
+    CONST = "qpsk"
+    N_SYM = 4
+    PILOT_SPACING = 8
+
+    def test_ofdm_full_output_is_complex(self):
+        out = ofdm_full(n_subcarriers=self.N_SC,
+                        subcarrier_spacing=self.SC_SPACING,
+                        cp_length=self.CP_LEN, constellation=self.CONST,
+                        n_symbols=self.N_SYM, fs=FS,
+                        pilot_spacing=self.PILOT_SPACING)
+        assert np.iscomplexobj(out)
+
+    def test_ofdm_full_cyclic_prefix_present(self):
+        """Last cp_length samples of each OFDM symbol body repeat at start."""
+        out = ofdm_full(n_subcarriers=self.N_SC,
+                        subcarrier_spacing=self.SC_SPACING,
+                        cp_length=self.CP_LEN, constellation=self.CONST,
+                        n_symbols=self.N_SYM, fs=FS,
+                        pilot_spacing=self.PILOT_SPACING)
+        symbol_len = self.N_SC + self.CP_LEN  # 80 samples per OFDM symbol
+        for sym_idx in range(self.N_SYM):
+            start = sym_idx * symbol_len
+            cp = out[start:start + self.CP_LEN]
+            body_tail = out[start + self.CP_LEN + self.N_SC - self.CP_LEN:
+                            start + self.CP_LEN + self.N_SC]
+            np.testing.assert_allclose(cp, body_tail, atol=1e-10)
+
+    def test_ofdm_full_pilot_subcarriers(self):
+        """Pilots at expected positions (every pilot_spacing subcarriers)."""
+        # Use deterministic seed and extract freq-domain from one symbol
+        out = ofdm_full(n_subcarriers=self.N_SC,
+                        subcarrier_spacing=self.SC_SPACING,
+                        cp_length=self.CP_LEN, constellation=self.CONST,
+                        n_symbols=1, fs=FS,
+                        pilot_spacing=self.PILOT_SPACING)
+        symbol_len = self.N_SC + self.CP_LEN
+        # Extract body (skip CP)
+        body = out[self.CP_LEN:self.CP_LEN + self.N_SC]
+        freq_domain = np.fft.fft(body) / np.sqrt(self.N_SC)
+        # Pilot positions: k where k % pilot_spacing == 0 and k != 0
+        # and k != N_SC//2
+        for k in range(self.N_SC):
+            if k == 0 or k == self.N_SC // 2:
+                continue
+            if self.PILOT_SPACING > 0 and k % self.PILOT_SPACING == 0:
+                # Pilot should be BPSK (magnitude ~1.0)
+                assert np.abs(freq_domain[k]) > 0.5
+
+    def test_ofdm_full_dc_null(self):
+        """Subcarrier 0 and N/2 should be zero (DC null)."""
+        out = ofdm_full(n_subcarriers=self.N_SC,
+                        subcarrier_spacing=self.SC_SPACING,
+                        cp_length=self.CP_LEN, constellation=self.CONST,
+                        n_symbols=1, fs=FS,
+                        pilot_spacing=self.PILOT_SPACING)
+        symbol_len = self.N_SC + self.CP_LEN
+        body = out[self.CP_LEN:self.CP_LEN + self.N_SC]
+        freq_domain = np.fft.fft(body) / np.sqrt(self.N_SC)
+        # DC (k=0) and Nyquist (k=N/2) should be near zero
+        assert np.abs(freq_domain[0]) < 1e-10
+        assert np.abs(freq_domain[self.N_SC // 2]) < 1e-10
 
 
 # ---------------------------------------------------------------------------

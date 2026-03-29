@@ -15,10 +15,14 @@ class ImpairmentConfig:
     snr_levels: list[int] = field(default_factory=lambda: list(SNR_LEVELS))
     max_freq_offset: int = MAX_FREQ_OFFSET
     scenario_weights: dict[str, float] = field(default_factory=lambda: {
-        "hf_clean": 0.08, "hf_good": 0.20, "hf_poor": 0.20,
-        "vhf_mobile": 0.10, "uhf_urban": 0.05, "sdr_desktop": 0.10,
-        "contest_crowded": 0.10, "overdriven": 0.05, "poorly_operated": 0.05,
+        "hf_clean": 0.07, "hf_good": 0.16, "hf_poor": 0.16,
+        "vhf_mobile": 0.08, "uhf_urban": 0.04, "sdr_desktop": 0.08,
+        "contest_crowded": 0.08, "overdriven": 0.04, "poorly_operated": 0.04,
         "vintage": 0.03, "near_far": 0.02, "auroral": 0.02,
+        # Sprint 4 — multi-domain scenarios
+        "indoor_multipath": 0.04, "leo_satellite": 0.03,
+        "automotive": 0.02, "urban_cellular": 0.03,
+        "radar_clutter": 0.02, "maritime": 0.02, "ism_congested": 0.02,
     })
     watterson_model: str = "builtin"  # "builtin" or "sdc" (scikit-dsp-comm)
     window_stride: int = 0  # 0 = auto (window_length // 2)
@@ -239,7 +243,7 @@ def load_config(path: Optional[str | Path] = None) -> Config:
         d = raw["dataset"]
         _warn_unknown_keys("dataset", d.keys(), _KNOWN_DATASET_KEYS)
         for key in ("sample_rate", "window_length", "output_dir", "seed",
-                     "workers"):
+                     "workers", "domains"):
             if key in d:
                 setattr(cfg.dataset, key, d[key])
 

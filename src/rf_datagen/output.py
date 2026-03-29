@@ -8,25 +8,28 @@ from pathlib import Path
 
 import numpy as np
 
-from .constants import SIGNAL_LABELS
+from .domains import ALL_SIGNAL_LABELS
 from .logging_config import get_logger
 
 log = get_logger("output")
 
 
-def atomic_save_npy(path, array):
-    """Save a numpy array atomically via temp file + rename.
+def _atomic_replace(path, suffix, write_fn):
+    """Generic atomic file write: write to temp, then os.replace().
 
-    Writes to a temp file in the same directory, then os.replace() to the
-    final path.  This guarantees the file is either fully written or absent
-    — never a corrupt partial write.
+    Args:
+        path: Final destination path.
+        suffix: Temp file suffix (e.g. ".tmp.npy").
+        write_fn: Callable(tmp_path) that writes the file content.
+            If write_fn needs an open fd, it should accept the path
+            and open it itself.  For npy we pass the path directly;
+            for text formats we open via os.fdopen in the caller.
     """
     dirn = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=dirn, suffix=".tmp.npy")
+    fd, tmp = tempfile.mkstemp(dir=dirn, suffix=suffix)
     try:
         os.close(fd)
-        np.save(tmp, array, allow_pickle=False)
-        # np.save won't append .npy since tmp already ends with .npy
+        write_fn(tmp)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -34,40 +37,31 @@ def atomic_save_npy(path, array):
         except OSError:
             pass
         raise
+
+
+def atomic_save_npy(path, array):
+    """Save a numpy array atomically via temp file + rename."""
+    def _write(tmp):
+        np.save(tmp, array, allow_pickle=False)
+    _atomic_replace(path, ".tmp.npy", _write)
 
 
 def atomic_write_csv(path, header, rows):
     """Write a CSV file atomically via temp file + rename."""
-    dirn = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=dirn, suffix=".csv.tmp")
-    try:
-        with os.fdopen(fd, "w", newline="") as f:
+    def _write(tmp):
+        with open(tmp, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(header)
             writer.writerows(rows)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    _atomic_replace(path, ".tmp.csv", _write)
 
 
 def atomic_write_json(path, data, indent=2):
     """Write a JSON file atomically via temp file + rename."""
-    dirn = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=dirn, suffix=".json.tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
+    def _write(tmp):
+        with open(tmp, "w") as f:
             json.dump(data, f, indent=indent)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    _atomic_replace(path, ".tmp.json", _write)
 
 
 def save_checkpoint(windows, class_name, output_dir):
@@ -126,7 +120,7 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
         from .constants import WINDOW_LEN
         window_len = WINDOW_LEN
     if labels is None:
-        labels = SIGNAL_LABELS
+        labels = ALL_SIGNAL_LABELS
 
     parts_dir = os.path.join(output_dir, "parts")
     if not os.path.exists(parts_dir):
@@ -171,17 +165,73 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
     return iq_data, all_tags
 
 
-def save_dataset(iq_data, tags, scenarios, output_dir, prefix="rf_datagen"):
-    """Save assembled dataset to output directory."""
+def save_dataset(iq_data, tags, scenarios, output_dir, prefix="rf_datagen",
+                 split_ratios=None, seed=42):
+    """Save assembled dataset to output directory.
+
+    Args:
+        iq_data: Complex IQ array of shape [N, window_len].
+        tags: List of class name strings, length N.
+        scenarios: List of scenario name strings, length N.
+        output_dir: Output directory path.
+        prefix: Filename prefix.
+        split_ratios: Optional (train, val, test) ratios that sum to 1.0.
+            When provided, produces separate files per split with
+            stratified class balance.  Default None = no split.
+        seed: RNG seed for reproducible splitting.
+
+    Returns:
+        (iq_path, csv_path) for unsplit, or dict of paths per split.
+    """
     os.makedirs(output_dir, exist_ok=True)
 
-    iq_path = os.path.join(output_dir, f"{prefix}_iq.npy")
-    csv_path = os.path.join(output_dir, f"{prefix}_tags.csv")
+    if split_ratios is None:
+        iq_path = os.path.join(output_dir, f"{prefix}_iq.npy")
+        csv_path = os.path.join(output_dir, f"{prefix}_tags.csv")
+        atomic_save_npy(iq_path, iq_data)
+        write_csv(tags, scenarios, csv_path)
+        log.info("Saved %d windows to %s", len(iq_data), iq_path)
+        log.info("Saved metadata to %s", csv_path)
+        return iq_path, csv_path
 
-    atomic_save_npy(iq_path, iq_data)
-    write_csv(tags, scenarios, csv_path)
+    # Stratified train/val/test split
+    train_r, val_r, test_r = split_ratios
+    rng = np.random.RandomState(seed)
 
-    log.info("Saved %d windows to %s", len(iq_data), iq_path)
-    log.info("Saved metadata to %s", csv_path)
+    # Group indices by class for stratification
+    from collections import defaultdict
+    class_indices = defaultdict(list)
+    for i, tag in enumerate(tags):
+        class_indices[tag].append(i)
 
-    return iq_path, csv_path
+    train_idx, val_idx, test_idx = [], [], []
+    for cls in sorted(class_indices.keys()):
+        indices = np.array(class_indices[cls])
+        rng.shuffle(indices)
+        n = len(indices)
+        n_train = max(1, int(n * train_r))
+        n_val = max(0, int(n * val_r))
+        # test gets the remainder
+        train_idx.extend(indices[:n_train])
+        val_idx.extend(indices[n_train:n_train + n_val])
+        test_idx.extend(indices[n_train + n_val:])
+
+    paths = {}
+    for split_name, idxs in [("train", train_idx), ("val", val_idx),
+                              ("test", test_idx)]:
+        if not idxs:
+            continue
+        idxs = sorted(idxs)
+        split_iq = iq_data[idxs]
+        split_tags = [tags[i] for i in idxs]
+        split_scenarios = [scenarios[i] for i in idxs]
+
+        iq_path = os.path.join(output_dir, f"{prefix}_{split_name}_iq.npy")
+        csv_path = os.path.join(output_dir, f"{prefix}_{split_name}_tags.csv")
+        atomic_save_npy(iq_path, split_iq)
+        write_csv(split_tags, split_scenarios, csv_path)
+        log.info("Saved %d %s windows to %s", len(split_iq), split_name,
+                 iq_path)
+        paths[split_name] = (iq_path, csv_path)
+
+    return paths

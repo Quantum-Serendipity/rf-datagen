@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rf-datagen"
 version = "1.0.0"
-description = "RF signal IQ dataset generator for ML training — 51 amateur radio signal classes with realistic channel impairments"
+description = "RF signal IQ dataset generator for ML training — 90 RF signal classes across narrowband, moderate, and wideband domains with realistic channel impairments"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [

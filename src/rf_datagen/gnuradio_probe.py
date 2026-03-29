@@ -40,7 +40,6 @@ Usage as CLI tap point::
 
 import os
 import shutil
-import struct
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -49,7 +48,7 @@ from typing import Optional
 
 import numpy as np
 
-from .constants import FS, WINDOW_LEN
+from .constants import FS
 from .logging_config import get_logger
 
 log = get_logger("gnuradio_probe")

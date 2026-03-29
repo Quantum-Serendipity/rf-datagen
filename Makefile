@@ -1,4 +1,4 @@
-.PHONY: generate list validate clean
+.PHONY: generate generate-moderate generate-wideband generate-all list validate clean
 .PHONY: validate-roundtrip validate-all validate-quick
 .PHONY: validate-wsjtx validate-packet validate-freedv validate-digivoice
 .PHONY: validate-analog validate-analog-stt validate-cw validate-sstv
@@ -11,6 +11,15 @@
 
 generate:
 	python -m rf_datagen.cli generate -c config.toml
+
+generate-moderate:
+	python -m rf_datagen.cli generate -c config.toml --domains moderate
+
+generate-wideband:
+	python -m rf_datagen.cli generate -c config.toml --domains wideband
+
+generate-all:
+	python -m rf_datagen.cli generate -c config.toml --domains narrowband moderate wideband
 
 list:
 	python -m rf_datagen.cli list

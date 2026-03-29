@@ -9,15 +9,61 @@ References:
     Park et al.   — SpecAugment (time/frequency masking)
 """
 
+import logging
+
 import numpy as np
 
 from ..constants import FS, WINDOW_LEN
+
+log = logging.getLogger(__name__)
 
 
 def normalize_power(sig):
     """Normalize to unit average power."""
     p = np.sqrt(np.mean(np.abs(sig) ** 2))
     return sig / p if p > 1e-10 else sig
+
+
+def _sig_power(sig, min_power=1e-20):
+    """Return signal power, or None if below min_power (skip signal)."""
+    p = np.mean(np.abs(sig) ** 2)
+    return p if p >= min_power else None
+
+
+def _jakes_spectrum(n, doppler_hz, fs):
+    """Compute normalized Jakes Doppler spectrum filter.
+
+    Returns a frequency-domain filter array of length n.  If doppler_hz
+    is too small, returns None (caller should use flat fading).
+    """
+    if doppler_hz < 0.01:
+        return None
+    freqs = np.fft.fftfreq(n, 1.0 / fs)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        jakes = np.where(
+            np.abs(freqs) < doppler_hz,
+            1.0 / np.sqrt(np.maximum(1e-10, 1 - (freqs / doppler_hz) ** 2)),
+            0.0)
+    jakes[0] = 0.0
+    energy = np.sqrt(np.sum(jakes ** 2))
+    if energy > 1e-10:
+        jakes /= energy
+    return jakes
+
+
+def _fading_tap(n, doppler_hz, fs):
+    """Generate a single Rayleigh fading tap with Doppler spectrum.
+
+    Returns a complex fading process of length n, normalized to unit power.
+    """
+    noise = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
+    jakes = _jakes_spectrum(n, doppler_hz, fs)
+    if jakes is not None:
+        filtered = np.fft.ifft(np.fft.fft(noise) * jakes * np.sqrt(n))
+    else:
+        filtered = noise
+    pwr = np.sqrt(np.mean(np.abs(filtered) ** 2))
+    return filtered / pwr if pwr > 1e-10 else filtered
 
 
 def add_awgn(sig, snr_db):
@@ -46,16 +92,6 @@ def apply_watterson(sig, fs=FS):
     delay_s, doppler_hz = profiles[np.random.randint(0, 3)]
     delay_samples = max(1, int(delay_s * fs))
     n = len(sig)
-
-    def _fading_tap(n, doppler, fs):
-        noise = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
-        if doppler < 0.01:
-            return noise * np.abs(noise[0])
-        freqs = np.fft.fftfreq(n, 1.0 / fs)
-        doppler_filter = np.exp(-0.5 * (freqs / doppler) ** 2)
-        filtered = np.fft.ifft(np.fft.fft(noise) * doppler_filter)
-        pwr = np.sqrt(np.mean(np.abs(filtered) ** 2))
-        return filtered / pwr if pwr > 1e-10 else filtered
 
     g1 = _fading_tap(n, doppler_hz, fs)
     g2 = _fading_tap(n, doppler_hz, fs)
@@ -97,7 +133,8 @@ def apply_watterson_sdc(sig, fs=FS):
         for i in range(len(sig)):
             out[i] = chan.model_step(sig[i])
         return out
-    except Exception:
+    except Exception as e:
+        log.debug("FadingModel failed, falling back to built-in: %s", e)
         return apply_watterson(sig, fs)
 
 
@@ -121,21 +158,7 @@ def apply_rician(sig, fs=FS, k_db=None):
     los_amp = np.sqrt(k_linear / (k_linear + 1))
     scatter_amp = np.sqrt(1.0 / (k_linear + 1))
     doppler_hz = np.random.uniform(1.0, 30.0)
-    freqs = np.fft.fftfreq(n, 1.0 / fs)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        jakes = np.where(
-            np.abs(freqs) < doppler_hz,
-            1.0 / np.sqrt(np.maximum(1e-10, 1 - (freqs / doppler_hz) ** 2)),
-            0.0)
-    jakes[0] = 0.0
-    jakes_energy = np.sqrt(np.sum(jakes ** 2))
-    if jakes_energy > 1e-10:
-        jakes /= jakes_energy
-    scatter = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
-    scatter = np.fft.ifft(np.fft.fft(scatter) * jakes * np.sqrt(n))
-    pwr = np.sqrt(np.mean(np.abs(scatter) ** 2))
-    if pwr > 1e-10:
-        scatter /= pwr
+    scatter = _fading_tap(n, doppler_hz, fs)
     los_phase = np.random.uniform(0, 2 * np.pi)
     channel = los_amp * np.exp(1j * los_phase) + scatter_amp * scatter
     if np.random.random() < 0.5:
@@ -299,8 +322,8 @@ def apply_impulse_noise(sig, fs=FS):
 
 def apply_adjacent_signal(sig, fs=FS):
     """Adjacent-channel interference — nearby narrowband signal bleed."""
-    sig_power = np.mean(np.abs(sig) ** 2)
-    if sig_power < 1e-20:
+    sig_power = _sig_power(sig)
+    if sig_power is None:
         return sig
     offset_hz = np.random.choice([-1, 1]) * np.random.uniform(500, 2500)
     rel_db = np.random.uniform(-20, -3)
@@ -415,27 +438,7 @@ def apply_tapped_delay_line(sig, delays, powers, doppler, fs=FS):
         delay_samples = max(0, int(delay_s * fs))
         tap_gain = 10 ** (power_db / 20)
 
-        # Rayleigh fading with Doppler spectrum for this tap
-        noise = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
-        if doppler > 0.01:
-            freqs = np.fft.fftfreq(n, 1.0 / fs)
-            with np.errstate(divide='ignore', invalid='ignore'):
-                jakes = np.where(
-                    np.abs(freqs) < doppler,
-                    1.0 / np.sqrt(np.maximum(1e-10,
-                                             1 - (freqs / doppler) ** 2)),
-                    0.0)
-            jakes[0] = 0.0
-            energy = np.sqrt(np.sum(jakes ** 2))
-            if energy > 1e-10:
-                jakes /= energy
-            fading = np.fft.ifft(np.fft.fft(noise) * jakes * np.sqrt(n))
-        else:
-            fading = noise
-
-        pwr = np.sqrt(np.mean(np.abs(fading) ** 2))
-        if pwr > 1e-10:
-            fading /= pwr
+        fading = _fading_tap(n, doppler, fs)
 
         # Apply delayed, faded tap
         delayed = np.zeros_like(sig)
@@ -463,8 +466,8 @@ def apply_clutter(sig, clutter_type=None, scr_db=None, fs=FS):
     if scr_db is None:
         scr_db = np.random.uniform(0, 20)
 
-    sig_power = np.mean(np.abs(sig) ** 2)
-    if sig_power < 1e-20:
+    sig_power = _sig_power(sig)
+    if sig_power is None:
         return sig
 
     clutter_power = sig_power * 10 ** (-scr_db / 10)
@@ -504,8 +507,8 @@ def apply_ism_interference(sig, n_interferers=None, fs=FS):
     if n_interferers is None:
         n_interferers = np.random.randint(1, 5)
 
-    sig_power = np.mean(np.abs(sig) ** 2)
-    if sig_power < 1e-20:
+    sig_power = _sig_power(sig)
+    if sig_power is None:
         return sig
 
     result = sig.copy()
@@ -554,6 +557,56 @@ def apply_ism_interference(sig, n_interferers=None, fs=FS):
         intf_power = np.mean(np.abs(intf) ** 2)
         if intf_power > 1e-20:
             scale = np.sqrt(sig_power * 10 ** (rel_db / 10) / intf_power)
+            result += scale * intf
+
+    return result
+
+
+def apply_signal_mixing(sig, mix_signals, sir_db_range=(-5, 10), fs=FS):
+    """Superimpose 1-2 signals from a pool at configurable SIR.
+
+    Creates co-channel interference by mixing additional signals at a
+    random signal-to-interference ratio.
+
+    Args:
+        sig: Primary signal (complex array).
+        mix_signals: List/array of complex signals to draw from.
+        sir_db_range: (min_sir, max_sir) in dB. Higher = weaker interference.
+        fs: Sample rate.
+
+    Returns:
+        Mixed signal (same length as sig).
+    """
+    if len(mix_signals) == 0:
+        return sig
+
+    sig_power = _sig_power(sig)
+    if sig_power is None:
+        return sig
+
+    result = sig.copy()
+    n_mix = np.random.randint(1, min(3, len(mix_signals) + 1))
+
+    for _ in range(n_mix):
+        idx = np.random.randint(len(mix_signals))
+        intf = mix_signals[idx].copy()
+
+        # Match length
+        if len(intf) < len(sig):
+            intf = np.pad(intf, (0, len(sig) - len(intf)))
+        elif len(intf) > len(sig):
+            start = np.random.randint(0, len(intf) - len(sig))
+            intf = intf[start:start + len(sig)]
+
+        # Random frequency offset to simulate off-tune
+        offset_hz = np.random.uniform(-500, 500)
+        intf = freq_shift(intf, offset_hz, fs)
+
+        # Scale to target SIR
+        sir_db = np.random.uniform(*sir_db_range)
+        intf_power = np.mean(np.abs(intf) ** 2)
+        if intf_power > 1e-20:
+            scale = np.sqrt(sig_power * 10 ** (-sir_db / 10) / intf_power)
             result += scale * intf
 
     return result

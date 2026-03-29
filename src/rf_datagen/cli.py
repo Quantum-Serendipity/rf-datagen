@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 
 from .config import load_config, GeneratorConfig
-from .constants import SIGNAL_LABELS, WINDOW_LEN
-from .domains import DOMAINS, labels_for_domain
+from .constants import SIGNAL_LABELS
+from .domains import DOMAINS, labels_for_domain, SIGNAL_DOMAIN_MAP
 from .generators import GENERATORS
 from . import _state
 from .logging_config import setup_logging, get_logger

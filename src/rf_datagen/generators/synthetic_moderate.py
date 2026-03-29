@@ -3,36 +3,22 @@
 import numpy as np
 from scipy.signal import fftconvolve
 
-from ..constants import MODERATE_FS, MODERATE_WINDOW_LEN
+from ..domains import MODERATE
 from ..dsp import (gfsk_mod, fsk_mod, psk_mod, _gmsk_mod, ofdm_carriers,
                     chirp_mod, dsss_mod, oqpsk_mod, ppm_mod)
-from .base import BaseGenerator
+from .base import BaseGenerator, ensure_length, make_gap
 
 
-_FS = MODERATE_FS
-_WL = MODERATE_WINDOW_LEN
+_FS = MODERATE.sample_rate
+_WL = MODERATE.window_length
 
 
 # ---------------------------------------------------------------------------
 # Mode synthesizers — all accept *, fs=_FS, window_len=_WL
 # ---------------------------------------------------------------------------
 
-def _ensure_length(fn):
-    """Decorator: loop synth until output >= window_len."""
-    def wrapper(*, fs=_FS, window_len=_WL):
-        segments = []
-        total = 0
-        while total < window_len:
-            seg = fn(fs=fs, window_len=window_len)
-            segments.append(seg)
-            total += len(seg)
-        return np.concatenate(segments) if len(segments) > 1 else segments[0]
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
 
-
-@_ensure_length
+@ensure_length
 def synth_ble(*, fs=_FS, window_len=_WL):
     """BLE — GFSK at 1 Msym/s, BT=0.5, advertising PDU framing."""
     n_packets = np.random.randint(3, 10)
@@ -41,8 +27,12 @@ def synth_ble(*, fs=_FS, window_len=_WL):
     for _ in range(n_packets):
         # Preamble: alternating 01010101 (1 byte)
         preamble = np.array([0, 1] * 4)
-        # Access address: 4 bytes (advertising = 0x8E89BED6)
-        aa_bits = np.random.randint(0, 2, 32)
+        # Access address: 0x8E89BED6 for advertising, random for data
+        if np.random.random() < 0.4:  # ~40% advertising packets
+            aa_val = 0x8E89BED6
+        else:
+            aa_val = np.random.randint(0, 2**32)
+        aa_bits = np.array([(aa_val >> i) & 1 for i in range(32)], dtype=int)
         # PDU: 2-39 bytes
         pdu_bits = np.random.randint(0, 2, np.random.randint(16, 312))
         # CRC: 3 bytes
@@ -54,13 +44,13 @@ def synth_ble(*, fs=_FS, window_len=_WL):
         seg = gfsk_mod(symbols, 2, 500e3, 1e-6, fs=fs, bt=0.5)
         segments.append(seg)
         # Inter-packet interval
-        gap_us = np.random.uniform(150, 10000)
-        gap = np.zeros(max(1, int(gap_us * 1e-6 * fs)), dtype=np.complex128)
+        gap = make_gap(150e-6, 10e-3, fs)
         segments.append(gap)
 
     return np.concatenate(segments)
 
 
+@ensure_length
 def synth_zwave(*, fs=_FS, window_len=_WL):
     """Z-Wave — FSK at 9.6/40/100 kbps, ±40 kHz deviation."""
     baud = np.random.choice([9600, 40000, 100000])
@@ -75,16 +65,20 @@ def synth_zwave(*, fs=_FS, window_len=_WL):
         sync = np.array([0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1])
         data = np.random.randint(0, 2, np.random.randint(50, 300))
         bits = np.concatenate([preamble, sync, data])
-        seg = fsk_mod(bits, 2, deviation, 1.0 / baud, fs=fs)
+        # Manchester encoding: 1→[1,0], 0→[0,1]
+        manchester = np.zeros(len(bits) * 2, dtype=int)
+        manchester[0::2] = bits
+        manchester[1::2] = 1 - bits
+        # FSK at 2× baud rate (Manchester doubles symbol rate)
+        seg = fsk_mod(manchester, 2, deviation, 1.0 / (2 * baud), fs=fs)
         segments.append(seg)
-        gap = np.zeros(int(np.random.uniform(0.01, 0.05) * fs),
-                       dtype=np.complex128)
+        gap = make_gap(0.01, 0.05, fs)
         segments.append(gap)
 
     return np.concatenate(segments)
 
 
-@_ensure_length
+@ensure_length
 def synth_ads_b(*, fs=_FS, window_len=_WL):
     """ADS-B — PPM 1090ES format: 8μs preamble + 112-bit message."""
     n_msgs = np.random.randint(5, 20)
@@ -107,14 +101,13 @@ def synth_ads_b(*, fs=_FS, window_len=_WL):
         msg = np.concatenate([preamble, data_sig])
         segments.append(msg)
         # Random inter-message gap
-        gap = np.zeros(int(np.random.uniform(0.0005, 0.005) * fs),
-                       dtype=np.complex128)
+        gap = make_gap(0.0005, 0.005, fs)
         segments.append(gap)
 
     return np.concatenate(segments)
 
 
-@_ensure_length
+@ensure_length
 def synth_gsm_burst(*, fs=_FS, window_len=_WL):
     """GSM — GMSK at 270.833 kbps, BT=0.3, normal burst structure."""
     baud = 270833
@@ -133,14 +126,13 @@ def synth_gsm_burst(*, fs=_FS, window_len=_WL):
         seg = _gmsk_mod(bits, baud, bt=0.3, fs=fs)
         segments.append(seg)
         # TDMA gap (577 μs per timeslot, 8 slots per frame)
-        gap = np.zeros(int(np.random.uniform(0.0001, 0.001) * fs),
-                       dtype=np.complex128)
+        gap = make_gap(0.0001, 0.001, fs)
         segments.append(gap)
 
     return np.concatenate(segments)
 
 
-@_ensure_length
+@ensure_length
 def synth_lfm_radar(*, fs=_FS, window_len=_WL):
     """LFM radar — linear FM chirp with variable bandwidth/PRF."""
     bw = np.random.uniform(50e3, 500e3)
@@ -150,7 +142,7 @@ def synth_lfm_radar(*, fs=_FS, window_len=_WL):
     return chirp_mod(bw, pulse_dur, prf, n_pulses, fs=fs)
 
 
-@_ensure_length
+@ensure_length
 def synth_fmcw_radar(*, fs=_FS, window_len=_WL):
     """FMCW radar — continuous triangular frequency sweep."""
     bw = np.random.uniform(100e3, 500e3)
@@ -177,7 +169,7 @@ def synth_fmcw_radar(*, fs=_FS, window_len=_WL):
     return sig
 
 
-@_ensure_length
+@ensure_length
 def synth_phase_coded_radar(*, fs=_FS, window_len=_WL):
     """Phase-coded radar — Frank/P4 polyphase codes on carrier."""
     code_type = np.random.choice(["frank", "p4"])
@@ -216,6 +208,7 @@ def synth_phase_coded_radar(*, fs=_FS, window_len=_WL):
     return sig
 
 
+@ensure_length
 def synth_noaa_apt(*, fs=_FS, window_len=_WL):
     """NOAA APT — 2400 Hz AM subcarrier with sync tones and image data."""
     line_dur = 0.5  # 0.5s per line, 4160 samples
@@ -263,6 +256,7 @@ def synth_noaa_apt(*, fs=_FS, window_len=_WL):
     return sig
 
 
+@ensure_length
 def synth_cospas_sarsat(*, fs=_FS, window_len=_WL):
     """COSPAS-SARSAT — BPSK at 400 bps, 406 MHz beacon frame."""
     baud = 400.0
@@ -277,13 +271,13 @@ def synth_cospas_sarsat(*, fs=_FS, window_len=_WL):
         seg = psk_mod(bits, baud, fs=fs, order=2)
         segments.append(seg)
         # ~50s repetition interval (scaled down for dataset)
-        gap = np.zeros(int(np.random.uniform(0.1, 0.5) * fs),
-                       dtype=np.complex128)
+        gap = make_gap(0.1, 0.5, fs)
         segments.append(gap)
 
     return np.concatenate(segments)
 
 
+@ensure_length
 def synth_lora_wide(*, fs=_FS, window_len=_WL):
     """LoRa wide — full-bandwidth chirp spread spectrum at native rate."""
     sf = np.random.randint(7, 13)
@@ -325,6 +319,7 @@ def synth_lora_wide(*, fs=_FS, window_len=_WL):
     return sig
 
 
+@ensure_length
 def synth_vdl2(*, fs=_FS, window_len=_WL):
     """VDL Mode 2 — D8PSK at 10.5 ksym/s with VDL2 framing."""
     baud = 10500.0
@@ -332,18 +327,24 @@ def synth_vdl2(*, fs=_FS, window_len=_WL):
     segments = []
 
     for _ in range(n_frames):
-        # Preamble + sync + data
-        n_sym = np.random.randint(100, 500)
-        symbols = np.random.randint(0, 8, n_sym)
+        # Known preamble: 16 alternating D8PSK symbols for carrier/clock sync
+        preamble_sym = np.array([0, 4] * 8, dtype=int)  # alternating 0° and 180°
+        # Unique word: 20-symbol pattern for frame sync
+        unique_word = np.array([0, 1, 2, 3, 4, 5, 6, 7, 0, 1,
+                                2, 3, 4, 5, 6, 7, 0, 1, 2, 3], dtype=int)
+        # Frame header + random data payload
+        n_data = np.random.randint(50, 450)
+        data_sym = np.random.randint(0, 8, n_data)
+        symbols = np.concatenate([preamble_sym, unique_word, data_sym])
         seg = psk_mod(symbols, baud, fs=fs, order=8)
         segments.append(seg)
-        gap = np.zeros(int(np.random.uniform(0.005, 0.05) * fs),
-                       dtype=np.complex128)
+        gap = make_gap(0.005, 0.05, fs)
         segments.append(gap)
 
     return np.concatenate(segments)
 
 
+@ensure_length
 def synth_drm_wide(*, fs=_FS, window_len=_WL):
     """DRM wide — OFDM digital broadcast at native DRM parameters."""
     n_carriers = np.random.choice([109, 206, 226])
@@ -355,7 +356,7 @@ def synth_drm_wide(*, fs=_FS, window_len=_WL):
                          fs=fs)
 
 
-@_ensure_length
+@ensure_length
 def synth_dect(*, fs=_FS, window_len=_WL):
     """DECT — GFSK at 1.152 Mbps, BT=0.5, TDMA 10ms frame."""
     baud = 1152000
@@ -371,13 +372,13 @@ def synth_dect(*, fs=_FS, window_len=_WL):
         seg = gfsk_mod(symbols, 2, baud / 2.0, 1.0 / baud, fs=fs, bt=0.5)
         segments.append(seg)
         # Guard time between slots
-        guard = np.zeros(int(np.random.uniform(10e-6, 50e-6) * fs),
-                         dtype=np.complex128)
+        guard = make_gap(10e-6, 50e-6, fs)
         segments.append(guard)
 
     return np.concatenate(segments)
 
 
+@ensure_length
 def synth_iridium(*, fs=_FS, window_len=_WL):
     """Iridium — DQPSK at 25 ksym/s with simplex burst structure."""
     baud = 25000.0
@@ -391,8 +392,7 @@ def synth_iridium(*, fs=_FS, window_len=_WL):
         seg = psk_mod(symbols, baud, fs=fs, order=4)
         segments.append(seg)
         # Inter-burst gap
-        gap = np.zeros(int(np.random.uniform(0.001, 0.01) * fs),
-                       dtype=np.complex128)
+        gap = make_gap(0.001, 0.01, fs)
         segments.append(gap)
 
     return np.concatenate(segments)
@@ -420,15 +420,4 @@ class SyntheticModerateGenerator(BaseGenerator):
     name = "synthetic_moderate"
     required_tools = []
     signal_classes = MODERATE_CLASSES
-
-    def generate_class(self, class_name, rng=None):
-        synth_fn = MODERATE_SYNTHESIZERS[class_name]
-        segments = []
-        target_samples = max(self.window_len * 10,
-                             self.samples_per_class * self.window_len // 4)
-        total = 0
-        while total < target_samples:
-            seg = synth_fn(fs=self.fs, window_len=self.window_len)
-            segments.append(seg)
-            total += len(seg)
-        return np.concatenate(segments)
+    synthesizers = MODERATE_SYNTHESIZERS

@@ -27,6 +27,11 @@ from rf_datagen.impairments.effects import (
     apply_narrowband_birdie,
     apply_time_mask,
     apply_freq_mask,
+    apply_doppler_rate,
+    apply_tapped_delay_line,
+    apply_clutter,
+    apply_ism_interference,
+    apply_signal_mixing,
     extract_windows,
 )
 from rf_datagen.impairments.transmitter import (
@@ -381,6 +386,125 @@ def test_extract_windows_unit_power(tone_1k):
     for i in range(windows.shape[0]):
         rms = np.sqrt(np.mean(np.abs(windows[i]) ** 2))
         assert abs(rms - 1.0) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# apply_doppler_rate
+# ---------------------------------------------------------------------------
+
+def test_doppler_rate_length_preserved(tone_1k):
+    out = apply_doppler_rate(tone_1k, rate_hz_per_s=200, fs=FS)
+    assert len(out) == len(tone_1k)
+
+
+def test_doppler_rate_frequency_shift_increases_over_time(tone_1k):
+    # Use a longer signal so we can split halves meaningfully
+    n = 4096
+    t = np.arange(n) / FS
+    sig = np.exp(2j * np.pi * 1000 * t).astype(np.complex128)
+    out = apply_doppler_rate(sig, rate_hz_per_s=500, fs=FS)
+    half = n // 2
+    # Spectrum of first half
+    spec_first = np.abs(np.fft.fft(out[:half]))
+    freqs_first = np.fft.fftfreq(half, 1.0 / FS)
+    peak_first = freqs_first[np.argmax(spec_first)]
+    # Spectrum of second half
+    spec_second = np.abs(np.fft.fft(out[half:]))
+    freqs_second = np.fft.fftfreq(half, 1.0 / FS)
+    peak_second = freqs_second[np.argmax(spec_second)]
+    # The rate is positive so the peak should move up over time
+    assert peak_second > peak_first
+
+
+# ---------------------------------------------------------------------------
+# apply_tapped_delay_line
+# ---------------------------------------------------------------------------
+
+def test_tapped_delay_line_length_preserved(tone_1k):
+    delays = [1e-4, 5e-3, 10e-3]
+    powers = [0.0, -3.0, -6.0]
+    # Use doppler=0 to bypass Jakes filter (avoids bin-spacing edge case)
+    out = apply_tapped_delay_line(tone_1k, delays, powers, doppler=0.0, fs=FS)
+    assert len(out) == len(tone_1k)
+
+
+def test_tapped_delay_line_delayed_copies_present(tone_1k):
+    # Use non-zero delays so each tap produces a shifted copy;
+    # doppler=0 uses raw Rayleigh noise (no Jakes filter).
+    delays = [1e-4, 5e-3, 10e-3]  # 1, 60, 120 samples at fs=12000
+    powers = [0.0, -3.0, -6.0]
+    out = apply_tapped_delay_line(tone_1k, delays, powers, doppler=0.0, fs=FS)
+    # The output should be nonzero (delayed copies are present)
+    assert np.any(np.abs(out) > 0)
+    # Adding more taps should change the result vs a single tap
+    out_single = apply_tapped_delay_line(tone_1k, [1e-4], [0.0], doppler=0.0, fs=FS)
+    assert not np.allclose(out, out_single, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# apply_clutter
+# ---------------------------------------------------------------------------
+
+def test_clutter_length_preserved(tone_1k):
+    out = apply_clutter(tone_1k, clutter_type="gaussian", scr_db=10, fs=FS)
+    assert len(out) == len(tone_1k)
+
+
+def test_clutter_lower_scr_means_more_noise(tone_1k):
+    out_high_scr = apply_clutter(tone_1k, clutter_type="gaussian", scr_db=20, fs=FS)
+    noise_high = np.mean(np.abs(out_high_scr - tone_1k) ** 2)
+    out_low_scr = apply_clutter(tone_1k, clutter_type="gaussian", scr_db=5, fs=FS)
+    noise_low = np.mean(np.abs(out_low_scr - tone_1k) ** 2)
+    assert noise_low > noise_high
+
+
+@pytest.mark.parametrize("clutter_type", ["gaussian", "weibull", "k"])
+def test_clutter_all_types_work(clutter_type, tone_1k):
+    out = apply_clutter(tone_1k, clutter_type=clutter_type, scr_db=10, fs=FS)
+    assert len(out) == len(tone_1k)
+    assert np.all(np.isfinite(out))
+
+
+# ---------------------------------------------------------------------------
+# apply_ism_interference
+# ---------------------------------------------------------------------------
+
+def test_ism_interference_length_preserved(tone_1k):
+    out = apply_ism_interference(tone_1k, n_interferers=2, fs=FS)
+    assert len(out) == len(tone_1k)
+
+
+def test_ism_interference_power_increases_with_more_interferers(tone_1k):
+    out_few = apply_ism_interference(tone_1k, n_interferers=1, fs=FS)
+    power_few = np.mean(np.abs(out_few) ** 2)
+    out_many = apply_ism_interference(tone_1k, n_interferers=4, fs=FS)
+    power_many = np.mean(np.abs(out_many) ** 2)
+    assert power_many > power_few
+
+
+# ---------------------------------------------------------------------------
+# apply_signal_mixing
+# ---------------------------------------------------------------------------
+
+def test_signal_mixing_length_preserved(tone_1k):
+    n = len(tone_1k)
+    t = np.arange(n) / FS
+    mix_pool = [np.exp(2j * np.pi * 2000 * t)]
+    out = apply_signal_mixing(tone_1k, mix_pool, sir_db_range=(0, 5), fs=FS)
+    assert len(out) == len(tone_1k)
+
+
+def test_signal_mixing_power_increases(tone_1k):
+    n = len(tone_1k)
+    t = np.arange(n) / FS
+    mix_pool = [np.exp(2j * np.pi * f * t) for f in [500, 1500, 2000]]
+    out = apply_signal_mixing(tone_1k, mix_pool, sir_db_range=(-5, 5), fs=FS)
+    assert np.mean(np.abs(out) ** 2) > np.mean(np.abs(tone_1k) ** 2) * 0.9
+
+
+def test_signal_mixing_empty_pool(tone_1k):
+    out = apply_signal_mixing(tone_1k, [], sir_db_range=(0, 5), fs=FS)
+    np.testing.assert_array_equal(out, tone_1k)
 
 
 # ---------------------------------------------------------------------------

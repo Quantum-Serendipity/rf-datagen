@@ -8,7 +8,26 @@ from ..dsp import (gfsk_mod, fsk_mod, ook_mod, psk_mod,
                     _4fsk_mod, _gmsk_mod, _pi4dqpsk_mod, ofdm_carriers)
 from ..content.typing import CWFistModel, text_to_varicode_bits, text_to_morse_elements
 from ..content.ham_text import PSK_TEXTS, CW_PHRASES
-from .base import BaseGenerator
+from .base import BaseGenerator, make_gap
+
+
+def _psk_transition_ramp(envelope, transitions, sps):
+    """Apply raised-cosine envelope dip at PSK phase transitions.
+
+    At each transition index, the envelope ramps down to zero and back up
+    using a cosine taper of length sps//4 (clamped to >=2).
+    """
+    half = max(1, sps // 8)
+    ramp_down = 0.5 * (1 + np.cos(np.pi * np.arange(half) / half))
+    ramp_up = ramp_down[::-1]
+    n = len(envelope)
+    for center in transitions:
+        s = max(0, center - half)
+        m = min(n, center)
+        e = min(n, center + half)
+        envelope[s:m] = np.minimum(envelope[s:m], ramp_down[:m - s])
+        envelope[m:e] = np.minimum(envelope[m:e], ramp_up[:e - m])
+    return envelope
 
 
 def _get_psk_text():
@@ -202,8 +221,30 @@ def synth_thor(*, fs=FS, window_len=WINDOW_LEN):
 
 
 def synth_packet(*, fs=FS, window_len=WINDOW_LEN):
-    n_bits = np.random.randint(100, 500)
-    bits = np.random.randint(0, 2, n_bits)
+    # HDLC framing
+    flag = np.array([0, 1, 1, 1, 1, 1, 1, 0], dtype=int)  # 0x7E
+    addr = np.random.randint(0, 2, 8)
+    ctrl = np.random.randint(0, 2, 8)
+    # Random data payload (5-40 bytes)
+    n_data_bytes = np.random.randint(5, 41)
+    data = np.random.randint(0, 2, n_data_bytes * 8)
+    # Bit stuffing on addr + ctrl + data (insert 0 after five 1s)
+    raw_bits = np.concatenate([addr, ctrl, data])
+    stuffed = []
+    ones_count = 0
+    for bit in raw_bits:
+        stuffed.append(bit)
+        if bit == 1:
+            ones_count += 1
+            if ones_count == 5:
+                stuffed.append(0)
+                ones_count = 0
+        else:
+            ones_count = 0
+    stuffed = np.array(stuffed, dtype=int)
+    # CRC-16 placeholder (16 random bits — full CRC calc not needed for ML training)
+    crc = np.random.randint(0, 2, 16)
+    bits = np.concatenate([flag, stuffed, crc, flag])
     return fsk_mod(bits, 2, 200.0, 1.0 / 300.0, fs=fs)
 
 
@@ -315,17 +356,9 @@ def synth_psk31(*, fs=FS, window_len=WINDOW_LEN):
     for i, b in enumerate(phase_bits):
         phase[i * sps:(i + 1) * sps] = b * np.pi
     envelope = np.ones(n)
-    ramp_len = sps // 4
-    if ramp_len > 1:
-        ramp = 0.5 * (1 - np.cos(np.pi * np.arange(ramp_len) / ramp_len))
-        for i in range(1, n_sym):
-            if phase_bits[i] != phase_bits[i - 1]:
-                center = i * sps
-                start = max(0, center - ramp_len)
-                end = min(n, center + ramp_len)
-                half = (end - start) // 2
-                envelope[start:start + half] = ramp[:half] if half <= ramp_len else ramp[:half]
-                envelope[start + half:end] = ramp[:end - start - half][::-1] if (end - start - half) <= ramp_len else ramp[:end - start - half][::-1]
+    transitions = [i * sps for i in range(1, n_sym)
+                   if phase_bits[i] != phase_bits[i - 1]]
+    _psk_transition_ramp(envelope, transitions, sps)
     carrier_freq = np.random.uniform(-200, 200)
     return envelope * np.exp(1j * (2 * np.pi * carrier_freq * t + phase))
 
@@ -345,18 +378,9 @@ def synth_psk63(*, fs=FS, window_len=WINDOW_LEN):
     for i, b in enumerate(phase_bits):
         phase[i * sps:(i + 1) * sps] = b * np.pi
     envelope = np.ones(n)
-    ramp_len = sps // 3
-    if ramp_len > 1:
-        ramp_down = 0.5 * (1 + np.cos(np.pi * np.arange(ramp_len) / ramp_len))
-        for i in range(1, n_sym):
-            if phase_bits[i] != phase_bits[i - 1]:
-                center = i * sps
-                start = max(0, center - ramp_len // 2)
-                end = min(n, center + ramp_len // 2)
-                seg_len = end - start
-                if seg_len > 0:
-                    envelope[start:end] = np.linspace(1, 0, seg_len // 2 + 1)[:seg_len // 2].tolist() + \
-                                          np.linspace(0, 1, seg_len - seg_len // 2).tolist()
+    transitions = [i * sps for i in range(1, n_sym)
+                   if phase_bits[i] != phase_bits[i - 1]]
+    _psk_transition_ramp(envelope, transitions, sps)
     carrier_freq = np.random.uniform(-200, 200)
     return envelope * np.exp(1j * (2 * np.pi * carrier_freq * t + phase))
 
@@ -400,19 +424,9 @@ def synth_qpsk(*, fs=FS, window_len=WINDOW_LEN):
     for i, p in enumerate(phases):
         phase_sig[i * sps:(i + 1) * sps] = p
     envelope = np.ones(n)
-    ramp_len = sps // 4
-    if ramp_len > 1:
-        ramp = 0.5 * (1 - np.cos(np.pi * np.arange(ramp_len) / ramp_len))
-        for i in range(1, n_sym):
-            if phases[i] != phases[i - 1]:
-                center = i * sps
-                start = max(0, center - ramp_len)
-                end = min(n, center + ramp_len)
-                mid = (start + end) // 2
-                envelope[start:mid] = np.minimum(envelope[start:mid],
-                    ramp[:mid - start])
-                envelope[mid:end] = np.minimum(envelope[mid:end],
-                    ramp[:end - mid][::-1])
+    transitions = [i * sps for i in range(1, n_sym)
+                   if phases[i] != phases[i - 1]]
+    _psk_transition_ramp(envelope, transitions, sps)
     carrier_freq = np.random.uniform(-200, 200)
     return envelope * np.exp(1j * (2 * np.pi * carrier_freq * t + phase_sig))
 
@@ -432,15 +446,9 @@ def synth_psk125(*, fs=FS, window_len=WINDOW_LEN):
     for i, b in enumerate(phase_bits):
         phase[i * sps:(i + 1) * sps] = b * np.pi
     envelope = np.ones(n)
-    ramp_len = sps // 3
-    if ramp_len > 1:
-        ramp = 0.5 * (1 + np.cos(np.pi * np.arange(ramp_len) / ramp_len))
-        for i in range(1, n_sym):
-            if phase_bits[i] != phase_bits[i - 1]:
-                center = i * sps
-                start = max(0, center - ramp_len // 2)
-                end = min(n, start + ramp_len)
-                envelope[start:end] = ramp[:end - start]
+    transitions = [i * sps for i in range(1, n_sym)
+                   if phase_bits[i] != phase_bits[i - 1]]
+    _psk_transition_ramp(envelope, transitions, sps)
     carrier_freq = np.random.uniform(-300, 300)
     return envelope * np.exp(1j * (2 * np.pi * carrier_freq * t + phase))
 
@@ -455,8 +463,12 @@ def synth_8psk(*, fs=FS, window_len=WINDOW_LEN):
     phase_sig = np.zeros(n)
     for i, p in enumerate(phases):
         phase_sig[i * sps:(i + 1) * sps] = p
+    envelope = np.ones(n)
+    transitions = [i * sps for i in range(1, n_sym)
+                   if phases[i] != phases[i - 1]]
+    _psk_transition_ramp(envelope, transitions, sps)
     carrier_freq = np.random.uniform(-200, 200)
-    return np.exp(1j * (2 * np.pi * carrier_freq * t + phase_sig))
+    return envelope * np.exp(1j * (2 * np.pi * carrier_freq * t + phase_sig))
 
 
 def synth_fsq(*, fs=FS, window_len=WINDOW_LEN):
@@ -500,6 +512,32 @@ def synth_fax(*, fs=FS, window_len=WINDOW_LEN):
     # the fldigi generator produces real FAX waveforms for training —
     # this synthetic fallback only needs to cover the spectral shape.
     return synth_sstv(fs=fs, window_len=window_len)
+
+
+def synth_navtex(*, fs=FS, window_len=WINDOW_LEN):
+    """NAVTEX — SITOR-B (FEC) at 100 baud, 170 Hz shift FSK."""
+    baud = 100.0
+    shift = 170.0
+    # SITOR-B uses 7-bit characters (4B/3Y FEC pattern)
+    # Generate multiple messages with phasing signal + data + end-of-message
+    n_msgs = np.random.randint(2, 6)
+    segments = []
+    for _ in range(n_msgs):
+        # Phasing: alternating α (alpha) characters for sync (10+ characters)
+        n_phasing = np.random.randint(10, 20)
+        phasing_bits = np.tile([1, 0, 0, 0, 0, 1, 1], n_phasing)  # α = 0x43
+        # Message body: random 7-bit characters in FEC (each sent twice)
+        n_chars = np.random.randint(50, 300)
+        msg_bits = np.random.randint(0, 2, n_chars * 7)
+        # End-of-message: β (beta) characters
+        n_eom = 3
+        eom_bits = np.tile([1, 1, 0, 0, 1, 0, 0], n_eom)
+        bits = np.concatenate([phasing_bits, msg_bits, eom_bits])
+        seg = fsk_mod(bits, 2, shift, 1.0 / baud, fs=fs)
+        segments.append(seg)
+        # Inter-message gap (NAVTEX broadcasts have scheduled windows)
+        segments.append(make_gap(0.2, 1.0, fs))
+    return np.concatenate(segments)
 
 
 def synth_olivia(*, fs=FS, window_len=WINDOW_LEN):
@@ -851,8 +889,7 @@ def synth_dtmf(*, fs=FS, window_len=WINDOW_LEN):
             2 * np.fft.fft(tone) * (np.arange(n_tone) < n_tone // 2))
         segments.append(analytic)
         # Inter-digit gap
-        n_gap = max(1, int(gap_dur * fs))
-        segments.append(np.zeros(n_gap, dtype=np.complex128))
+        segments.append(make_gap(gap_dur, gap_dur, fs))
 
     return np.concatenate(segments)
 
@@ -1023,8 +1060,7 @@ def synth_selcal(*, fs=FS, window_len=WINDOW_LEN):
             2 * np.fft.fft(tone) * (np.arange(n_samp) < n_samp // 2))
         segments.append(analytic)
         # Gap between bursts
-        gap = np.zeros(max(1, int(gap_dur * fs)), dtype=np.complex128)
-        segments.append(gap)
+        segments.append(make_gap(gap_dur, gap_dur, fs))
 
     return np.concatenate(segments)
 
@@ -1350,7 +1386,8 @@ SYNTHESIZERS = {
     "PSK31": synth_psk31, "PSK63": synth_psk63, "SSB": synth_ssb,
     "QPSK": synth_qpsk, "PSK125": synth_psk125, "8PSK": synth_8psk,
     "FSQ": synth_fsq, "IFKP": synth_ifkp, "THROB": synth_throb,
-    "FAX": synth_fax, "OLIVIA": synth_olivia, "MT63": synth_mt63,
+    "FAX": synth_fax, "NAVTEX": synth_navtex,
+    "OLIVIA": synth_olivia, "MT63": synth_mt63,
     "FREEDV": synth_freedv, "M17": synth_m17,
     "DMR": synth_dmr, "DSTAR": synth_dstar,
     "YSF": synth_ysf, "P25": synth_p25, "NXDN": synth_nxdn,
@@ -1375,9 +1412,11 @@ class SyntheticGenerator(BaseGenerator):
     name = "synthetic"
     required_tools = []
     signal_classes = SYNTHETIC_CLASSES
+    synthesizers = SYNTHESIZERS
 
     def generate_class(self, class_name, rng=None):
-        synth_fn = SYNTHESIZERS[class_name]
+        """Override to add CW wpm_range and RSID injection."""
+        synth_fn = self.synthesizers[class_name]
         segments = []
         target_samples = max(self.window_len * 10,
                              self.samples_per_class * self.window_len // 4)
@@ -1390,8 +1429,7 @@ class SyntheticGenerator(BaseGenerator):
                 seg = synth_fn(fs=self.fs, window_len=self.window_len)
             if class_name != "NOISE" and np.random.random() < self.config.rsid_probability:
                 rsid = synth_rsid(fs=self.fs, window_len=self.window_len)
-                gap = np.zeros(int(np.random.uniform(0.05, 0.2) * self.fs),
-                               dtype=np.complex128)
+                gap = make_gap(0.05, 0.2, self.fs)
                 seg = np.concatenate([rsid, gap, seg])
             segments.append(seg)
             total += len(seg)

@@ -16,6 +16,8 @@ from .effects import (
     apply_powerline_hum, apply_narrowband_birdie,
     apply_doppler_rate, apply_tapped_delay_line,
     apply_clutter, apply_ism_interference,
+    apply_signal_mixing,
+    _fading_tap,
 )
 from .transmitter import TransmitterModel
 
@@ -145,16 +147,8 @@ def apply_auroral_scatter(sig, fs=FS):
     delay_s = np.random.uniform(1e-3, 5e-3)
     delay_samples = max(1, int(delay_s * fs))
 
-    def _auroral_fading_tap(n, doppler, fs):
-        noise = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
-        freqs = np.fft.fftfreq(n, 1.0 / fs)
-        doppler_filter = np.exp(-0.5 * (freqs / doppler) ** 2)
-        filtered = np.fft.ifft(np.fft.fft(noise) * doppler_filter)
-        pwr = np.sqrt(np.mean(np.abs(filtered) ** 2))
-        return filtered / pwr if pwr > 1e-10 else filtered
-
-    g1 = _auroral_fading_tap(n, doppler_hz, fs)
-    g2 = _auroral_fading_tap(n, doppler_hz, fs)
+    g1 = _fading_tap(n, doppler_hz, fs)
+    g2 = _fading_tap(n, doppler_hz, fs)
     delayed = np.zeros_like(sig)
     if delay_samples < n:
         delayed[delay_samples:] = sig[:-delay_samples]
@@ -176,6 +170,8 @@ def _apply_scenario_hf_clean(sig, snr_db, fs=FS):
 
 def _apply_scenario_hf_good(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
+    if np.random.random() < 0.15:
+        sig = TransmitterModel("CASUAL").apply(sig, fs)
     sig = _watterson(sig, fs)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
     if np.random.random() < 0.2:
@@ -194,6 +190,8 @@ def _apply_scenario_hf_good(sig, snr_db, fs=FS):
 
 def _apply_scenario_hf_poor(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
+    if np.random.random() < 0.15:
+        sig = TransmitterModel("CASUAL").apply(sig, fs)
     sig = _watterson(sig, fs)
     if np.random.random() < 0.4:
         sig = apply_qsb(sig, fs)
@@ -247,6 +245,8 @@ def _apply_scenario_uhf_urban(sig, snr_db, fs=FS):
 
 def _apply_scenario_sdr_desktop(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
+    if np.random.random() < 0.10:
+        sig = TransmitterModel("CASUAL").apply(sig, fs)
     if np.random.random() < 0.3:
         sig = apply_rayleigh(sig)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
@@ -268,6 +268,8 @@ def _apply_scenario_sdr_desktop(sig, snr_db, fs=FS):
 
 def _apply_scenario_contest_crowded(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
+    if np.random.random() < 0.10:
+        sig = TransmitterModel("CASUAL").apply(sig, fs)
     if np.random.random() < 0.5:
         sig = _watterson(sig, fs)
     else:
@@ -585,23 +587,32 @@ def apply_scenario_continuous(sig, snr_db, fs=FS, scenario=None):
 
 
 def apply_impairments(raw_windows, target_count, fs=FS, window_len=WINDOW_LEN,
-                      interferer_pool=None, return_metadata=False):
+                      interferer_pool=None, return_metadata=False,
+                      dtype=None):
     """Produce target_count impaired samples from raw clean windows.
 
     Distributes samples evenly across SNR levels (from config), applying
     scenario-based impairment profiles for physically coherent augmentation.
+
+    Args:
+        dtype: Output array dtype.  Defaults to complex128 for backward
+               compat; use complex64 for moderate/wideband domains to
+               halve memory.
     """
+    if dtype is None:
+        dtype = np.complex128
+
     global _INTERFERER_POOL
     if interferer_pool is not None:
         _INTERFERER_POOL = interferer_pool
 
     if len(raw_windows) == 0:
-        empty = np.zeros((0, window_len), dtype=np.complex128)
+        empty = np.zeros((0, window_len), dtype=dtype)
         return (empty, {"scenarios": []}) if return_metadata else empty
 
     snr_levels = _config.snr_levels
 
-    samples = np.zeros((target_count, window_len), dtype=np.complex128)
+    samples = np.zeros((target_count, window_len), dtype=dtype)
     scenarios = [] if return_metadata else None
     snr_per = target_count // len(snr_levels)
     idx = 0

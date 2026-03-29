@@ -2,35 +2,20 @@
 
 import numpy as np
 
-from ..constants import WIDEBAND_FS, WIDEBAND_WINDOW_LEN
+from ..domains import WIDEBAND
 from ..dsp import dsss_mod, oqpsk_mod, ofdm_full
-from .base import BaseGenerator
+from .base import BaseGenerator, ensure_length, make_gap
 
 
-_FS = WIDEBAND_FS
-_WL = WIDEBAND_WINDOW_LEN
-
-
-def _ensure_length(fn):
-    """Decorator: loop synth until output >= window_len."""
-    def wrapper(*, fs=_FS, window_len=_WL):
-        segments = []
-        total = 0
-        while total < window_len:
-            seg = fn(fs=fs, window_len=window_len)
-            segments.append(seg)
-            total += len(seg)
-        return np.concatenate(segments) if len(segments) > 1 else segments[0]
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
+_FS = WIDEBAND.sample_rate
+_WL = WIDEBAND.window_length
 
 
 # ---------------------------------------------------------------------------
 # Mode synthesizers
 # ---------------------------------------------------------------------------
 
-@_ensure_length
+@ensure_length
 def synth_wifi_preamble(*, fs=_FS, window_len=_WL):
     """WiFi 802.11a/g — STF + LTF + SIGNAL + data OFDM symbols."""
     fft_size = 64
@@ -40,18 +25,26 @@ def synth_wifi_preamble(*, fs=_FS, window_len=_WL):
     # Short Training Field: 10 × 16-sample short symbols
     stf_freq = np.zeros(64, dtype=np.complex128)
     stf_subcarriers = [-24, -20, -16, -12, -8, -4, 4, 8, 12, 16, 20, 24]
-    for k in stf_subcarriers:
-        stf_freq[k % 64] = np.random.choice([1 + 1j, 1 - 1j,
-                                              -1 + 1j, -1 - 1j]) / np.sqrt(2)
+    stf_values = [1+1j, -1-1j, 1+1j, -1-1j, -1-1j, 1+1j,
+                  -1-1j, -1-1j, 1+1j, 1+1j, 1+1j, 1+1j]
+    stf_scale = np.sqrt(13 / 6)
+    for k, val in zip(stf_subcarriers, stf_values):
+        stf_freq[k % 64] = val * stf_scale
     stf_time = np.fft.ifft(stf_freq) * np.sqrt(64)
     stf = np.tile(stf_time[:16], 10)
 
     # Long Training Field: GI2 (32 samples) + 2 × LTF (64 samples each)
     ltf_freq = np.zeros(64, dtype=np.complex128)
+    ltf_known = [1, 1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1, 1, 1, -1, -1,
+                 1, 1, -1, 1, -1, 1, 1, 1, 1,                   # -26 to -1
+                 1, -1, -1, 1, 1, -1, 1, -1, 1, -1, -1, -1, -1, -1, 1, 1,
+                 -1, -1, 1, -1, 1, -1, 1, 1, 1, 1]              # +1 to +26
+    ltf_idx = 0
     for k in range(-26, 27):
         if k == 0:
             continue
-        ltf_freq[k % 64] = np.random.choice([1, -1])
+        ltf_freq[k % 64] = ltf_known[ltf_idx]
+        ltf_idx += 1
     ltf_time = np.fft.ifft(ltf_freq) * np.sqrt(64)
     gi2 = ltf_time[-32:]
     ltf = np.concatenate([gi2, ltf_time, ltf_time])
@@ -65,12 +58,11 @@ def synth_wifi_preamble(*, fs=_FS, window_len=_WL):
     frame = np.concatenate([stf, ltf, data])
 
     # Add inter-frame gap
-    gap = np.zeros(int(np.random.uniform(20e-6, 100e-6) * fs),
-                   dtype=np.complex128)
+    gap = make_gap(20e-6, 100e-6, fs)
     return np.concatenate([frame, gap])
 
 
-@_ensure_length
+@ensure_length
 def synth_lte_frame(*, fs=_FS, window_len=_WL):
     """LTE — PSS/SSS sync signals + resource elements, 15 kHz SCS."""
     fft_size = 1024  # ~15 kHz SCS at 15.36 MHz, close enough at 20 MHz
@@ -90,7 +82,33 @@ def synth_lte_frame(*, fs=_FS, window_len=_WL):
 
     # SSS (Secondary Sync Signal)
     sss = np.zeros(pss_len, dtype=np.complex128)
-    sss_seq = np.random.choice([1, -1], 62)
+    # SSS from m-sequence pair (simplified spec-compliant generation)
+    cell_id_group = np.random.randint(0, 168)
+    # Generate m-sequences using x^5 + x^2 + 1 polynomial
+    m0 = np.ones(31, dtype=int)  # length-31 m-sequence
+    reg = np.array([0, 0, 0, 0, 1])  # initial state
+    for i in range(31):
+        m0[i] = reg[4]
+        fb = reg[4] ^ reg[1]  # taps at positions 5 and 2
+        reg = np.roll(reg, 1)
+        reg[0] = fb
+    # Second m-sequence with x^5 + x^4 + x^2 + x + 1
+    m1 = np.ones(31, dtype=int)
+    reg = np.array([0, 0, 0, 0, 1])
+    for i in range(31):
+        m1[i] = reg[4]
+        fb = reg[4] ^ reg[3] ^ reg[1] ^ reg[0]
+        reg = np.roll(reg, 1)
+        reg[0] = fb
+    # Cyclic shifts based on cell_id_group
+    q_prime = cell_id_group // 30
+    q = cell_id_group // (q_prime + 1) if q_prime > 0 else cell_id_group
+    m_prime = cell_id_group + q * (q + 1) // 2
+    s0 = np.array([1 - 2 * m0[(i + (m_prime % 31)) % 31] for i in range(31)])
+    s1 = np.array([1 - 2 * m1[(i + (m_prime % 31)) % 31] for i in range(31)])
+    sss_seq = np.zeros(62)
+    sss_seq[0::2] = s0  # even indices
+    sss_seq[1::2] = s1  # odd indices
     for k in range(62):
         sss += sss_seq[k] * np.exp(
             1j * 2 * np.pi * (k - 31) * subcarrier_spacing * t) / np.sqrt(62)
@@ -104,11 +122,14 @@ def synth_lte_frame(*, fs=_FS, window_len=_WL):
     return np.concatenate([pss, sss, data])
 
 
-@_ensure_length
+@ensure_length
 def synth_fiveg_nr(*, fs=_FS, window_len=_WL):
     """5G NR — SSB (Synchronization Signal Block) + PDSCH-like OFDM."""
-    # NR can use 15/30/60/120 kHz SCS; use 30 kHz at 20 MHz
-    fft_size = 512
+    # NR can use 15/30/60/120 kHz SCS; randomly pick 15 or 30 kHz
+    if np.random.random() < 0.5:
+        fft_size = 1024   # ~19.5 kHz SCS ≈ 15 kHz
+    else:
+        fft_size = 672    # ~29.76 kHz SCS ≈ 30 kHz
     subcarrier_spacing = fs / fft_size
     cp_length = fft_size // 8
 
@@ -122,20 +143,46 @@ def synth_fiveg_nr(*, fs=_FS, window_len=_WL):
                      np.random.choice(["qpsk", "16qam", "64qam"]),
                      n_symbols, fs=fs, pilot_spacing=4)
 
-    gap = np.zeros(int(np.random.uniform(10e-6, 50e-6) * fs),
-                   dtype=np.complex128)
+    gap = make_gap(10e-6, 50e-6, fs)
     return np.concatenate([ssb, data, gap])
 
 
-@_ensure_length
+@ensure_length
 def synth_gps_l1(*, fs=_FS, window_len=_WL):
     """GPS L1 — Gold code (PRN 1-32) at 1.023 Mchip/s, 50 bps nav data."""
     chip_rate = 1.023e6
-    # Generate a Gold code (simplified: random PN code of length 1023)
+    # Generate Gold code from G1/G2 LFSRs per GPS ICD
     prn = np.random.randint(1, 33)
-    np.random.seed(prn + 1000)  # Deterministic per PRN
-    gold_code = np.random.randint(0, 2, 1023)
-    np.random.seed(None)
+    # G1 LFSR: x^10 + x^3 + 1 (taps at bits 3 and 10)
+    g1 = np.zeros(1023, dtype=int)
+    reg = np.ones(10, dtype=int)
+    for i in range(1023):
+        g1[i] = reg[9]
+        fb = reg[2] ^ reg[9]
+        reg = np.roll(reg, 1)
+        reg[0] = fb
+
+    # G2 LFSR: x^10 + x^9 + x^8 + x^6 + x^3 + x^2 + 1
+    # Tap pairs per PRN (GPS ICD table 3-I, selected entries)
+    tap_pairs = {
+        1: (2,6), 2: (3,7), 3: (4,8), 4: (5,9), 5: (1,9),
+        6: (2,10), 7: (1,8), 8: (2,9), 9: (3,10), 10: (2,3),
+        11: (3,4), 12: (5,6), 13: (6,7), 14: (7,8), 15: (8,9),
+        16: (9,10), 17: (1,4), 18: (2,5), 19: (3,6), 20: (4,7),
+        21: (5,8), 22: (6,9), 23: (1,3), 24: (4,6), 25: (5,7),
+        26: (6,8), 27: (7,9), 28: (8,10), 29: (1,6), 30: (2,7),
+        31: (3,8), 32: (4,9),
+    }
+    g2 = np.zeros(1023, dtype=int)
+    reg = np.ones(10, dtype=int)
+    tap1, tap2 = tap_pairs[prn]
+    for i in range(1023):
+        g2[i] = reg[tap1 - 1] ^ reg[tap2 - 1]
+        fb = reg[1] ^ reg[2] ^ reg[5] ^ reg[7] ^ reg[8] ^ reg[9]
+        reg = np.roll(reg, 1)
+        reg[0] = fb
+
+    gold_code = g1 ^ g2
 
     # Navigation data at 50 bps
     n_data_bits = np.random.randint(10, 50)
@@ -148,7 +195,7 @@ def synth_gps_l1(*, fs=_FS, window_len=_WL):
     return sig
 
 
-@_ensure_length
+@ensure_length
 def synth_zigbee(*, fs=_FS, window_len=_WL):
     """Zigbee 802.15.4 — O-QPSK with PN chip-to-symbol mapping."""
     # 2.4 GHz band: 2 Msym/s, 250 kbps
@@ -159,20 +206,27 @@ def synth_zigbee(*, fs=_FS, window_len=_WL):
     segments = []
 
     for _ in range(n_frames):
-        # SHR (preamble + SFD) + PHR + PSDU
-        n_symbols = np.random.randint(50, 200)
-        symbols = np.random.randint(0, 4, n_symbols)
+        # 802.15.4 SHR: 32 zero bits (preamble) → 8 zero symbols
+        preamble_symbols = np.zeros(8, dtype=int)
+        # SFD (Start of Frame Delimiter): 0xA7 → mapped to symbols
+        sfd_bits = np.array([1,1,1,0,0,1,0,1], dtype=int)  # 0xA7 LSB first
+        sfd_symbols = np.array([sfd_bits[i*2]*2 + sfd_bits[i*2+1] for i in range(4)], dtype=int)
+        # PHR (PHY Header): 1 byte frame length
+        phr_symbols = np.random.randint(0, 4, 2)
+        # PSDU (payload)
+        n_payload = np.random.randint(40, 190)
+        payload_symbols = np.random.randint(0, 4, n_payload)
+        symbols = np.concatenate([preamble_symbols, sfd_symbols, phr_symbols, payload_symbols])
         seg = oqpsk_mod(symbols, sym_rate, fs=fs)
         segments.append(seg)
         # Inter-frame spacing
-        gap = np.zeros(int(np.random.uniform(0.001, 0.01) * fs),
-                       dtype=np.complex128)
+        gap = make_gap(0.001, 0.01, fs)
         segments.append(gap)
 
     return np.concatenate(segments)
 
 
-@_ensure_length
+@ensure_length
 def synth_dab(*, fs=_FS, window_len=_WL):
     """DAB — 1536 subcarriers, 1 kHz spacing, with phase reference symbol."""
     fft_size = 2048  # Mode I: 2048-point FFT
@@ -191,7 +245,7 @@ def synth_dab(*, fs=_FS, window_len=_WL):
     return np.concatenate([prs, data])
 
 
-@_ensure_length
+@ensure_length
 def synth_dvb_t(*, fs=_FS, window_len=_WL):
     """DVB-T — 2K/8K mode OFDM with scattered/continual pilots."""
     mode = np.random.choice(["2k", "8k"])
@@ -211,7 +265,7 @@ def synth_dvb_t(*, fs=_FS, window_len=_WL):
                      constellation, n_symbols, fs=fs, pilot_spacing=12)
 
 
-@_ensure_length
+@ensure_length
 def synth_loran_c_wide(*, fs=_FS, window_len=_WL):
     """Loran-C — native-rate pulse envelope (8-9 pulses per GRI).
 
@@ -278,15 +332,4 @@ class SyntheticWidebandGenerator(BaseGenerator):
     name = "synthetic_wideband"
     required_tools = []
     signal_classes = WIDEBAND_CLASSES
-
-    def generate_class(self, class_name, rng=None):
-        synth_fn = WIDEBAND_SYNTHESIZERS[class_name]
-        segments = []
-        target_samples = max(self.window_len * 10,
-                             self.samples_per_class * self.window_len // 4)
-        total = 0
-        while total < target_samples:
-            seg = synth_fn(fs=self.fs, window_len=self.window_len)
-            segments.append(seg)
-            total += len(seg)
-        return np.concatenate(segments)
+    synthesizers = WIDEBAND_SYNTHESIZERS

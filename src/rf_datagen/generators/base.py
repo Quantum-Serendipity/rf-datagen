@@ -2,18 +2,53 @@
 
 import os
 import time
-from abc import ABC, abstractmethod
+from abc import ABC
 
 import numpy as np
 
 from .._state import shutdown_requested
 from ..config import GeneratorConfig, ImpairmentConfig, checkpoint_config_hash
 from ..constants import FS, WINDOW_LEN
+from ..domains import DOMAINS
 from ..impairments import extract_windows, apply_impairments, configure_impairments
 from ..logging_config import get_logger
 from ..output import atomic_save_npy, atomic_write_csv
 
 log = get_logger("generator")
+
+
+def make_gap(min_s, max_s, fs):
+    """Generate a silence gap with random duration.
+
+    Args:
+        min_s: Minimum gap duration in seconds.
+        max_s: Maximum gap duration in seconds.
+        fs: Sample rate in Hz.
+
+    Returns:
+        Complex-zero array of random length.
+    """
+    return np.zeros(max(1, int(np.random.uniform(min_s, max_s) * fs)),
+                    dtype=np.complex128)
+
+
+def ensure_length(fn):
+    """Decorator: loop synth function until output >= window_len.
+
+    Wraps a synthesizer function with signature (*, fs, window_len)
+    so it repeats until the total output length meets window_len.
+    """
+    def wrapper(*, fs, window_len):
+        segments = []
+        total = 0
+        while total < window_len:
+            seg = fn(fs=fs, window_len=window_len)
+            segments.append(seg)
+            total += len(seg)
+        return np.concatenate(segments) if len(segments) > 1 else segments[0]
+    wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
+    return wrapper
 
 
 class BaseGenerator(ABC):
@@ -23,11 +58,13 @@ class BaseGenerator(ABC):
         name: str               — generator name ("synthetic", "fldigi", etc.)
         required_tools: list    — CLI tools that must be in PATH
         signal_classes: list    — signal class names this generator covers
+        synthesizers: dict      — {CLASS_NAME: synth_fn} registry
     """
 
     name: str = ""
     required_tools: list = []
     signal_classes: list = []
+    synthesizers: dict = {}
 
     def __init__(self, config: GeneratorConfig,
                  impairment_config: ImpairmentConfig = None,
@@ -37,6 +74,15 @@ class BaseGenerator(ABC):
         self.samples_per_class = config.samples_per_class
         self.fs = fs
         self.window_len = window_len
+        # Resolve output dtype from domain registry
+        self._dtype = None
+        for domain in DOMAINS.values():
+            if domain.sample_rate == fs and domain.window_length == window_len:
+                self._dtype = domain.dtype.type
+                break
+        if self._dtype is None:
+            import numpy as np
+            self._dtype = np.complex128
 
     def check_prerequisites(self):
         """Return list of missing CLI tools. Empty = ready."""
@@ -47,9 +93,23 @@ class BaseGenerator(ABC):
                 missing.append(tool)
         return missing
 
-    @abstractmethod
     def generate_class(self, class_name, rng=None):
-        """Produce raw IQ for one class. Returns complex128 array."""
+        """Produce raw IQ for one class. Returns complex array.
+
+        Default implementation loops the synthesizer function from
+        self.synthesizers until target_samples is reached. Subclasses
+        may override for special handling (e.g. CW wpm, RSID injection).
+        """
+        synth_fn = self.synthesizers[class_name]
+        segments = []
+        target_samples = max(self.window_len * 10,
+                             self.samples_per_class * self.window_len // 4)
+        total = 0
+        while total < target_samples:
+            seg = synth_fn(fs=self.fs, window_len=self.window_len)
+            segments.append(seg)
+            total += len(seg)
+        return np.concatenate(segments)
 
     def run(self, output_dir, seed=42):
         """Full pipeline: generate -> extract windows -> impair -> save.
@@ -118,7 +178,8 @@ class BaseGenerator(ABC):
 
             samples, meta = apply_impairments(
                 raw_windows, n_samples, fs=self.fs,
-                window_len=self.window_len, return_metadata=True)
+                window_len=self.window_len, return_metadata=True,
+                dtype=self._dtype)
 
             # Save checkpoint atomically
             atomic_save_npy(npy_path, samples)

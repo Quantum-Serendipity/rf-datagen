@@ -4,6 +4,7 @@ import numpy as np
 from scipy.signal import fftconvolve
 
 from ..constants import FS
+from .filters import gaussian_filter_sigma, rrc_filter
 
 
 def gfsk_mod(symbols, num_tones, tone_spacing, symbol_dur, fs=FS, bt=2.0):
@@ -21,10 +22,8 @@ def gfsk_mod(symbols, num_tones, tone_spacing, symbol_dur, fs=FS, bt=2.0):
     # Gaussian smoothing
     filt_len = min(3 * sps, n)
     if filt_len > 1:
-        t_f = (np.arange(filt_len) - filt_len // 2) / fs
-        sigma = symbol_dur / (2 * np.pi * bt)
-        gauss = np.exp(-t_f ** 2 / (2 * sigma ** 2))
-        gauss /= gauss.sum()
+        sigma_s = (symbol_dur / (2 * np.pi * bt)) * fs  # sigma in samples
+        gauss = gaussian_filter_sigma(sigma_s, filt_len)
         freq = fftconvolve(freq, gauss, mode="same")
 
     phase = 2 * np.pi * np.cumsum(freq) / fs
@@ -61,8 +60,48 @@ def ook_mod(bits, tone_freq, bit_dur, fs=FS):
     return envelope * np.exp(1j * (2 * np.pi * tone_freq * t + phase0))
 
 
+def _upsample_rrc_iq(phases, sps, rolloff=0.35):
+    """Upsample symbol phases to impulse train and apply RRC pulse shaping.
+
+    Args:
+        phases: Array of symbol phase angles (radians).
+        sps: Samples per symbol.
+        rolloff: RRC rolloff factor.
+
+    Returns:
+        Complex baseband signal (I + jQ).
+    """
+    n_sym = len(phases)
+    n = n_sym * sps
+
+    # Impulse train
+    i_up = np.zeros(n)
+    q_up = np.zeros(n)
+    for k in range(n_sym):
+        idx = k * sps
+        if idx < n:
+            i_up[idx] = np.cos(phases[k])
+            q_up[idx] = np.sin(phases[k])
+
+    # RRC pulse shaping
+    n_taps = min(6 * sps + 1, n)
+    if n_taps > 1 and sps > 1:
+        rrc = rrc_filter(n_taps, rolloff=rolloff, sps=sps)
+        i_shaped = fftconvolve(i_up, rrc, mode="same")
+        q_shaped = fftconvolve(q_up, rrc, mode="same")
+    else:
+        # Fallback: hold each symbol
+        i_shaped = np.zeros(n)
+        q_shaped = np.zeros(n)
+        for k in range(n_sym):
+            i_shaped[k * sps:(k + 1) * sps] = np.cos(phases[k])
+            q_shaped[k * sps:(k + 1) * sps] = np.sin(phases[k])
+
+    return i_shaped + 1j * q_shaped
+
+
 def psk_mod(phase_bits, baud, fs=FS, order=2):
-    """PSK modulator with raised cosine amplitude shaping.
+    """PSK modulator with RRC pulse shaping.
 
     Args:
         phase_bits: Array of symbol indices (0 to order-1).
@@ -74,35 +113,14 @@ def psk_mod(phase_bits, baud, fs=FS, order=2):
         Complex IQ signal.
     """
     sps = max(1, int(fs / baud))
-    n_sym = len(phase_bits)
-    n = n_sym * sps
-    t = np.arange(n) / fs
-
+    n = len(phase_bits) * sps
     phases = np.array(phase_bits, dtype=float) * (2 * np.pi / order)
 
-    phase_sig = np.zeros(n)
-    for i, p in enumerate(phases):
-        phase_sig[i * sps:(i + 1) * sps] = p
-
-    # Raised cosine envelope at transitions (for BPSK)
-    envelope = np.ones(n)
-    if order == 2:
-        ramp_len = sps // 4
-        if ramp_len > 1:
-            for i in range(1, n_sym):
-                if phase_bits[i] != phase_bits[i - 1]:
-                    center = i * sps
-                    start = max(0, center - ramp_len)
-                    end = min(n, center + ramp_len)
-                    mid = (start + end) // 2
-                    ramp = 0.5 * (1 - np.cos(np.pi * np.arange(ramp_len) / ramp_len))
-                    envelope[start:mid] = np.minimum(
-                        envelope[start:mid], ramp[:mid - start])
-                    envelope[mid:end] = np.minimum(
-                        envelope[mid:end], ramp[:end - mid][::-1])
+    sig = _upsample_rrc_iq(phases, sps)
 
     carrier_freq = np.random.uniform(-200, 200)
-    return envelope * np.exp(1j * (2 * np.pi * carrier_freq * t + phase_sig))
+    t = np.arange(n) / fs
+    return sig * np.exp(2j * np.pi * carrier_freq * t)
 
 
 def _4fsk_mod(dibits, sym_rate, dev_outer, dev_inner, fs=FS, smooth=True):
@@ -126,10 +144,8 @@ def _4fsk_mod(dibits, sym_rate, dev_outer, dev_inner, fs=FS, smooth=True):
     if smooth:
         filt_len = min(4 * sps, n)
         if filt_len > 1:
-            sigma = sps / (2 * np.pi * 0.3)
-            t_f = (np.arange(filt_len) - filt_len // 2)
-            gauss = np.exp(-t_f ** 2 / (2 * sigma ** 2))
-            gauss /= gauss.sum()
+            sigma_s = sps / (2 * np.pi * 0.3)  # BT≈0.3 equivalent
+            gauss = gaussian_filter_sigma(sigma_s, filt_len)
             freq = fftconvolve(freq, gauss, mode="same")
 
     phase = 2 * np.pi * np.cumsum(freq) / fs
@@ -150,10 +166,8 @@ def _gmsk_mod(bits, bit_rate, bt=0.5, fs=FS):
     # Gaussian filter
     filt_len = min(4 * sps, n)
     if filt_len > 1:
-        sigma = sps / (2 * np.pi * bt)
-        t_f = (np.arange(filt_len) - filt_len // 2)
-        gauss = np.exp(-t_f ** 2 / (2 * sigma ** 2))
-        gauss /= gauss.sum()
+        sigma_s = sps / (2 * np.pi * bt)  # sigma in samples
+        gauss = gaussian_filter_sigma(sigma_s, filt_len)
         freq = fftconvolve(freq, gauss, mode="same")
 
     phase = 2 * np.pi * np.cumsum(freq) / fs
@@ -167,8 +181,6 @@ def _pi4dqpsk_mod(dibits, sym_rate, fs=FS):
     Each dibit rotates phase by one of {π/4, 3π/4, −3π/4, −π/4}.
     Used by TETRA (18 ksym/s), reusable for IS-136 cellular.
     """
-    from .filters import rrc_filter
-
     phase_map = {
         0b00: np.pi / 4,
         0b01: 3 * np.pi / 4,
@@ -185,24 +197,7 @@ def _pi4dqpsk_mod(dibits, sym_rate, fs=FS):
         phase_acc += phase_map.get(d & 0x03, np.pi / 4)
         phases[i] = phase_acc
 
-    # Upsample symbols
-    n = n_sym * sps
-    i_up = np.zeros(n)
-    q_up = np.zeros(n)
-    for k in range(n_sym):
-        i_up[k * sps] = np.cos(phases[k])
-        q_up[k * sps] = np.sin(phases[k])
-
-    # RRC pulse shaping
-    n_taps = min(6 * sps + 1, n)
-    if n_taps > 1:
-        rrc = rrc_filter(n_taps, rolloff=0.35, sps=sps)
-        i_shaped = fftconvolve(i_up, rrc, mode="same")
-        q_shaped = fftconvolve(q_up, rrc, mode="same")
-    else:
-        i_shaped, q_shaped = i_up, q_up
-
-    return i_shaped + 1j * q_shaped
+    return _upsample_rrc_iq(phases, sps)
 
 
 def ofdm_carriers(n_carriers, carrier_spacing, symbol_dur, n_symbols, fs=FS):

@@ -17,10 +17,12 @@ import shutil
 import sys
 import tempfile
 import wave
+from contextlib import contextmanager
 
 import numpy as np
 
 from .constants import FS, WINDOW_LEN, SNR_LEVELS, SIGNAL_LABELS
+from .domains import SIGNAL_DOMAIN_MAP
 from .impairments import normalize_power, extract_windows, apply_scenario, SCENARIO_NAMES
 from .impairments.effects import add_awgn
 from .impairments.scenarios import _SCENARIO_FUNCS
@@ -56,6 +58,23 @@ def _require_tts():
 # Visualization utilities
 # ---------------------------------------------------------------------------
 
+@contextmanager
+def _plot_context(save_path, nrows=1, ncols=1, figsize=(10, 4), dpi=120,
+                  **subplot_kw):
+    """Context manager for matplotlib figure lifecycle.
+
+    Yields (fig, axes), then calls tight_layout / savefig / close.
+    """
+    plt = _require_matplotlib()
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, **subplot_kw)
+    try:
+        yield fig, axes
+    finally:
+        fig.tight_layout()
+        fig.savefig(save_path, dpi=dpi)
+        plt.close(fig)
+
+
 def iq_spectrogram(sig, fs, nfft=256, noverlap=192):
     """Compute bilateral spectrogram of complex IQ signal.
 
@@ -78,45 +97,33 @@ def iq_spectrogram(sig, fs, nfft=256, noverlap=192):
 
 def plot_iq_spectrogram(sig, fs, title, save_path, nfft=256):
     """Save bilateral spectrogram PNG for complex IQ signal."""
-    plt = _require_matplotlib()
     freqs, times, S = iq_spectrogram(sig, fs, nfft)
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    extent = [times[0], times[-1], freqs[0], freqs[-1]]
-    ax.imshow(S, aspect="auto", origin="lower", extent=extent,
-              cmap="viridis", vmin=S.max() - 60, vmax=S.max())
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Frequency (Hz)")
-    ax.set_title(title)
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=120)
-    plt.close(fig)
+    with _plot_context(save_path, figsize=(10, 4)) as (fig, ax):
+        extent = [times[0], times[-1], freqs[0], freqs[-1]]
+        ax.imshow(S, aspect="auto", origin="lower", extent=extent,
+                  cmap="viridis", vmin=S.max() - 60, vmax=S.max())
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Frequency (Hz)")
+        ax.set_title(title)
     return save_path
 
 
 def plot_iq_waveform(sig, fs, title, save_path, max_samples=4096):
     """Save time-domain I/Q waveform PNG."""
-    plt = _require_matplotlib()
     n = min(len(sig), max_samples)
     t = np.arange(n) / fs * 1000  # ms
-
-    fig, ax = plt.subplots(figsize=(10, 3))
-    ax.plot(t, sig[:n].real, linewidth=0.5, alpha=0.8, label="I")
-    ax.plot(t, sig[:n].imag, linewidth=0.5, alpha=0.8, label="Q")
-    ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Amplitude")
-    ax.set_title(title)
-    ax.legend(loc="upper right", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=120)
-    plt.close(fig)
+    with _plot_context(save_path, figsize=(10, 3)) as (fig, ax):
+        ax.plot(t, sig[:n].real, linewidth=0.5, alpha=0.8, label="I")
+        ax.plot(t, sig[:n].imag, linewidth=0.5, alpha=0.8, label="Q")
+        ax.set_xlabel("Time (ms)")
+        ax.set_ylabel("Amplitude")
+        ax.set_title(title)
+        ax.legend(loc="upper right", fontsize=8)
     return save_path
 
 
 def plot_psd(sig, fs, title, save_path, nfft=1024):
     """Save power spectral density PNG."""
-    plt = _require_matplotlib()
-
     n_segs = max(1, len(sig) // nfft)
     psd = np.zeros(nfft)
     for i in range(n_segs):
@@ -130,72 +137,55 @@ def plot_psd(sig, fs, title, save_path, nfft=1024):
     psd_db = 10 * np.log10(psd + 1e-30)
     freqs = np.fft.fftshift(np.fft.fftfreq(nfft, 1 / fs))
 
-    fig, ax = plt.subplots(figsize=(10, 3))
-    ax.plot(freqs, psd_db, linewidth=0.8)
-    ax.set_xlabel("Frequency (Hz)")
-    ax.set_ylabel("Power (dB)")
-    ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=120)
-    plt.close(fig)
+    with _plot_context(save_path, figsize=(10, 3)) as (fig, ax):
+        ax.plot(freqs, psd_db, linewidth=0.8)
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("Power (dB)")
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
     return save_path
 
 
 def plot_snr_grid(sig_clean, fs, mode, save_path, nfft=256):
     """Save grid of spectrograms at each SNR level for one clean signal."""
-    plt = _require_matplotlib()
-
-    n_snr = len(SNR_LEVELS)
-    fig, axes = plt.subplots(2, 4, figsize=(16, 6))
-    fig.suptitle(f"{mode} — SNR comparison", fontsize=14)
-
-    for idx, snr in enumerate(SNR_LEVELS):
-        ax = axes[idx // 4, idx % 4]
-        impaired = add_awgn(normalize_power(sig_clean.copy()), snr)
-        freqs, times, S = iq_spectrogram(impaired, fs, nfft)
-        extent = [times[0], times[-1], freqs[0], freqs[-1]]
-        ax.imshow(S, aspect="auto", origin="lower", extent=extent,
-                  cmap="viridis", vmin=S.max() - 50, vmax=S.max())
-        ax.set_title(f"SNR {snr} dB", fontsize=10)
-        if idx % 4 == 0:
-            ax.set_ylabel("Freq (Hz)")
-        if idx >= 4:
-            ax.set_xlabel("Time (s)")
-
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=120)
-    plt.close(fig)
+    with _plot_context(save_path, nrows=2, ncols=4, figsize=(16, 6)) as (fig, axes):
+        fig.suptitle(f"{mode} — SNR comparison", fontsize=14)
+        for idx, snr in enumerate(SNR_LEVELS):
+            ax = axes[idx // 4, idx % 4]
+            impaired = add_awgn(normalize_power(sig_clean.copy()), snr)
+            freqs, times, S = iq_spectrogram(impaired, fs, nfft)
+            extent = [times[0], times[-1], freqs[0], freqs[-1]]
+            ax.imshow(S, aspect="auto", origin="lower", extent=extent,
+                      cmap="viridis", vmin=S.max() - 50, vmax=S.max())
+            ax.set_title(f"SNR {snr} dB", fontsize=10)
+            if idx % 4 == 0:
+                ax.set_ylabel("Freq (Hz)")
+            if idx >= 4:
+                ax.set_xlabel("Time (s)")
     return save_path
 
 
 def plot_before_after(clean, impaired, fs, scenario, snr, save_path, nfft=256):
     """Save side-by-side clean vs impaired spectrogram."""
-    plt = _require_matplotlib()
+    with _plot_context(save_path, ncols=2, figsize=(14, 4)) as (fig, (ax1, ax2)):
+        freqs, times, S1 = iq_spectrogram(clean, fs, nfft)
+        extent = [times[0], times[-1], freqs[0], freqs[-1]]
+        vmax = max(S1.max(), 0)
+        ax1.imshow(S1, aspect="auto", origin="lower", extent=extent,
+                   cmap="viridis", vmin=vmax - 50, vmax=vmax)
+        ax1.set_title("Clean signal")
+        ax1.set_ylabel("Frequency (Hz)")
+        ax1.set_xlabel("Time (s)")
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 4))
+        freqs, times, S2 = iq_spectrogram(impaired, fs, nfft)
+        extent = [times[0], times[-1], freqs[0], freqs[-1]]
+        vmax = max(S2.max(), 0)
+        ax2.imshow(S2, aspect="auto", origin="lower", extent=extent,
+                   cmap="viridis", vmin=vmax - 50, vmax=vmax)
+        ax2.set_title(f"{scenario} @ {snr} dB SNR")
+        ax2.set_xlabel("Time (s)")
 
-    freqs, times, S1 = iq_spectrogram(clean, fs, nfft)
-    extent = [times[0], times[-1], freqs[0], freqs[-1]]
-    vmax = max(S1.max(), 0)
-    ax1.imshow(S1, aspect="auto", origin="lower", extent=extent,
-               cmap="viridis", vmin=vmax - 50, vmax=vmax)
-    ax1.set_title("Clean signal")
-    ax1.set_ylabel("Frequency (Hz)")
-    ax1.set_xlabel("Time (s)")
-
-    freqs, times, S2 = iq_spectrogram(impaired, fs, nfft)
-    extent = [times[0], times[-1], freqs[0], freqs[-1]]
-    vmax = max(S2.max(), 0)
-    ax2.imshow(S2, aspect="auto", origin="lower", extent=extent,
-               cmap="viridis", vmin=vmax - 50, vmax=vmax)
-    ax2.set_title(f"{scenario} @ {snr} dB SNR")
-    ax2.set_xlabel("Time (s)")
-
-    fig.suptitle("Clean vs Impaired", fontsize=13)
-    fig.tight_layout()
-    fig.savefig(save_path, dpi=120)
-    plt.close(fig)
+        fig.suptitle("Clean vs Impaired", fontsize=13)
     return save_path
 
 
@@ -256,27 +246,51 @@ def _audio_tag(wav_path, label=""):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _get_active_window(mode, max_retries=20):
-    """Get a WINDOW_LEN chunk with non-zero power (skip silence gaps)."""
+def _all_synthesizers():
+    """Lazily merge all synthesizer registries into one dict."""
     from .generators.synthetic import SYNTHESIZERS
+    from .generators.synthetic_moderate import MODERATE_SYNTHESIZERS
+    from .generators.synthetic_wideband import WIDEBAND_SYNTHESIZERS
+    return {**SYNTHESIZERS, **MODERATE_SYNTHESIZERS, **WIDEBAND_SYNTHESIZERS}
+
+
+def _resolve_domain(mode):
+    """Look up the signal domain for a mode, returning (fs, window_len, synth_fn)."""
+    mode_upper = mode.upper()
+    domain = SIGNAL_DOMAIN_MAP.get(mode_upper)
+    fs = domain.sample_rate if domain else FS
+    wl = domain.window_length if domain else WINDOW_LEN
+    synth_fn = _all_synthesizers().get(mode_upper)
+    return fs, wl, synth_fn
+
+
+def _get_active_window(mode, max_retries=20):
+    """Get a window_len chunk with non-zero power (skip silence gaps).
+
+    Automatically resolves domain for the mode to use the correct fs and
+    window_len.
+    """
+    fs, wl, synth_fn = _resolve_domain(mode)
+    if synth_fn is None:
+        raise ValueError(f"Unknown mode '{mode}'")
 
     for _ in range(max_retries):
-        sig = SYNTHESIZERS[mode.upper()]()
-        if len(sig) > WINDOW_LEN:
-            start = np.random.randint(0, len(sig) - WINDOW_LEN)
-            window = sig[start:start + WINDOW_LEN]
+        sig = synth_fn(fs=fs, window_len=wl)
+        if len(sig) > wl:
+            start = np.random.randint(0, len(sig) - wl)
+            window = sig[start:start + wl]
         else:
-            window = np.zeros(WINDOW_LEN, dtype=np.complex128)
+            window = np.zeros(wl, dtype=np.complex128)
             window[:len(sig)] = sig
         power = np.mean(np.abs(window) ** 2)
         if power > 1e-10:
-            return normalize_power(window)
+            return normalize_power(window), fs, wl
     # Fallback: use extract_windows which filters silence
-    sig = SYNTHESIZERS[mode.upper()]()
-    windows = extract_windows(sig)
+    sig = synth_fn(fs=fs, window_len=wl)
+    windows = extract_windows(sig, window_len=wl)
     if len(windows) > 0:
-        return normalize_power(windows[np.random.randint(len(windows))])
-    return normalize_power(window)  # last resort
+        return normalize_power(windows[np.random.randint(len(windows))]), fs, wl
+    return normalize_power(window), fs, wl  # last resort
 
 
 # ---------------------------------------------------------------------------
@@ -383,49 +397,50 @@ def cmd_audio(args):
 
 def cmd_modulated(args):
     """Generate and visualize clean modulated IQ signals."""
-    from .generators.synthetic import SYNTHESIZERS
-
-    plt = _require_matplotlib()
+    _require_matplotlib()
     np.random.seed(args.seed)
     os.makedirs(args.output, exist_ok=True)
 
+    all_synths = _all_synthesizers()
+
     if args.all_modes:
-        modes = sorted(SYNTHESIZERS.keys())
+        modes = sorted(all_synths.keys())
     else:
         modes = [m.upper() for m in args.mode]
 
     for mode in modes:
-        if mode not in SYNTHESIZERS:
+        if mode not in all_synths:
             print(f"WARNING: Unknown mode '{mode}', skipping")
             continue
 
         print(f"\n{mode}:")
         for i in range(args.count):
-            window = _get_active_window(mode)
+            window, mode_fs, mode_wl = _get_active_window(mode)
             prefix = f"{mode}_{i+1:02d}"
 
             spec_path = os.path.join(args.output, f"{prefix}_spectrogram.png")
-            plot_iq_spectrogram(window, FS, f"{mode} — clean spectrogram",
+            plot_iq_spectrogram(window, mode_fs, f"{mode} — clean spectrogram",
                                 spec_path)
 
             wave_path = os.path.join(args.output, f"{prefix}_waveform.png")
-            plot_iq_waveform(window, FS, f"{mode} — I/Q waveform", wave_path)
+            plot_iq_waveform(window, mode_fs, f"{mode} — I/Q waveform",
+                             wave_path)
 
             psd_path = os.path.join(args.output, f"{prefix}_psd.png")
-            plot_psd(window, FS, f"{mode} — PSD", psd_path)
+            plot_psd(window, mode_fs, f"{mode} — PSD", psd_path)
 
             wav_path = os.path.join(args.output, f"{prefix}_iq.wav")
-            sig_to_wav(window, FS, wav_path, stereo_iq=True)
+            sig_to_wav(window, mode_fs, wav_path, stereo_iq=True)
 
-            dur_ms = len(window) / FS * 1000
+            dur_ms = len(window) / mode_fs * 1000
             print(f"  [{i+1}] {dur_ms:.0f}ms  "
                   f"power={np.mean(np.abs(window)**2):.4f}  "
                   f"-> {spec_path}")
 
         if args.snr_grid:
-            window = _get_active_window(mode)
+            window, mode_fs, mode_wl = _get_active_window(mode)
             grid_path = os.path.join(args.output, f"{mode}_snr_grid.png")
-            plot_snr_grid(window, FS, mode, grid_path)
+            plot_snr_grid(window, mode_fs, mode, grid_path)
             print(f"  SNR grid -> {grid_path}")
 
     print(f"\nOutput: {args.output}")
@@ -443,22 +458,22 @@ def cmd_impaired(args):
     os.makedirs(args.output, exist_ok=True)
 
     mode = args.mode.upper()
-    clean = _get_active_window(mode)
+    clean, mode_fs, mode_wl = _get_active_window(mode)
 
     if args.all_snr:
         grid_path = os.path.join(args.output, f"{mode}_snr_grid.png")
-        plot_snr_grid(clean, FS, mode, grid_path)
+        plot_snr_grid(clean, mode_fs, mode, grid_path)
         print(f"SNR grid -> {grid_path}")
 
         for snr in SNR_LEVELS:
-            impaired, scenario = apply_scenario(clean.copy(), snr)
+            impaired, scenario = apply_scenario(clean.copy(), snr, mode_fs)
             prefix = f"{mode}_snr{snr:+d}_{scenario}"
 
             ba_path = os.path.join(args.output, f"{prefix}_before_after.png")
-            plot_before_after(clean, impaired, FS, scenario, snr, ba_path)
+            plot_before_after(clean, impaired, mode_fs, scenario, snr, ba_path)
 
             spec_path = os.path.join(args.output, f"{prefix}_spectrogram.png")
-            plot_iq_spectrogram(impaired, FS,
+            plot_iq_spectrogram(impaired, mode_fs,
                                 f"{mode} — {scenario} @ {snr} dB",
                                 spec_path)
             print(f"  SNR {snr:+3d} dB  scenario={scenario:<20s}  -> {ba_path}")
@@ -473,28 +488,29 @@ def cmd_impaired(args):
         snr = args.snr
 
         for i in range(args.count):
-            impaired = scenario_fn(clean.copy(), snr, FS)
+            impaired = scenario_fn(clean.copy(), snr, mode_fs)
             prefix = f"{mode}_{args.scenario}_snr{snr:+d}_{i+1:02d}"
 
             ba_path = os.path.join(args.output, f"{prefix}_before_after.png")
-            plot_before_after(clean, impaired, FS, args.scenario, snr, ba_path)
+            plot_before_after(clean, impaired, mode_fs, args.scenario, snr,
+                              ba_path)
 
             wav_path = os.path.join(args.output, f"{prefix}_iq.wav")
-            sig_to_wav(impaired, FS, wav_path, stereo_iq=True)
+            sig_to_wav(impaired, mode_fs, wav_path, stereo_iq=True)
 
             print(f"  [{i+1}] {args.scenario} @ {snr} dB  -> {ba_path}")
 
     else:
         for i in range(args.count):
             snr = args.snr
-            impaired, scenario = apply_scenario(clean.copy(), snr)
+            impaired, scenario = apply_scenario(clean.copy(), snr, mode_fs)
             prefix = f"{mode}_{scenario}_snr{snr:+d}_{i+1:02d}"
 
             ba_path = os.path.join(args.output, f"{prefix}_before_after.png")
-            plot_before_after(clean, impaired, FS, scenario, snr, ba_path)
+            plot_before_after(clean, impaired, mode_fs, scenario, snr, ba_path)
 
             wav_path = os.path.join(args.output, f"{prefix}_iq.wav")
-            sig_to_wav(impaired, FS, wav_path, stereo_iq=True)
+            sig_to_wav(impaired, mode_fs, wav_path, stereo_iq=True)
 
             print(f"  [{i+1}] {scenario} @ {snr} dB  -> {ba_path}")
 
@@ -508,7 +524,7 @@ def cmd_impaired(args):
 
 def cmd_dataset(args):
     """Inspect an existing .npy + .csv training dataset on disk."""
-    plt = _require_matplotlib()
+    _require_matplotlib()
     np.random.seed(args.seed)
 
     data_path = args.path
@@ -592,21 +608,18 @@ def cmd_dataset(args):
                   f"scenario={scenario:<20s}  -> {spec_path}")
 
         if labels:
-            fig, ax = plt.subplots(figsize=(12, 5))
+            hist_path = os.path.join(args.output, "class_distribution.png")
             sorted_classes = sorted(counts.keys(),
                                      key=lambda c: SIGNAL_LABELS.index(c)
                                      if c in SIGNAL_LABELS else 999)
-            ax.bar(range(len(sorted_classes)),
-                   [counts[c] for c in sorted_classes])
-            ax.set_xticks(range(len(sorted_classes)))
-            ax.set_xticklabels(sorted_classes, rotation=45, ha="right",
-                                fontsize=8)
-            ax.set_ylabel("Samples")
-            ax.set_title("Class Distribution")
-            fig.tight_layout()
-            hist_path = os.path.join(args.output, "class_distribution.png")
-            fig.savefig(hist_path, dpi=120)
-            plt.close(fig)
+            with _plot_context(hist_path, figsize=(12, 5)) as (fig, ax):
+                ax.bar(range(len(sorted_classes)),
+                       [counts[c] for c in sorted_classes])
+                ax.set_xticks(range(len(sorted_classes)))
+                ax.set_xticklabels(sorted_classes, rotation=45, ha="right",
+                                    fontsize=8)
+                ax.set_ylabel("Samples")
+                ax.set_title("Class Distribution")
             print(f"\n  Class histogram -> {hist_path}")
 
         print(f"\n  Output: {args.output}")
@@ -754,16 +767,18 @@ def cmd_benchmark(args):
 
 def cmd_report(args):
     """Generate a self-contained HTML report for one mode."""
-    from .generators.synthetic import SYNTHESIZERS
-
-    plt = _require_matplotlib()
+    _require_matplotlib()
     np.random.seed(args.seed)
 
     mode = args.mode.upper()
-    if mode not in SYNTHESIZERS:
+    all_synths = _all_synthesizers()
+    if mode not in all_synths:
         print(f"ERROR: Unknown mode '{mode}'")
-        print(f"Available: {', '.join(sorted(SYNTHESIZERS.keys()))}")
+        print(f"Available: {', '.join(sorted(all_synths.keys()))}")
         return 1
+
+    # Resolve domain for this mode
+    mode_fs, mode_wl, synth_fn = _resolve_domain(mode)
 
     os.makedirs(args.output, exist_ok=True)
     tmpdir = tempfile.mkdtemp(prefix="qc_report_")
@@ -786,7 +801,7 @@ pre {{ background: #0d0d1a; padding: 10px; overflow-x: auto;
 audio {{ margin: 5px 0; }}
 </style></head><body>
 <h1>QC Report: {mode}</h1>
-<p>Generated: seed={args.seed}, FS={FS} Hz, WINDOW_LEN={WINDOW_LEN}</p>
+<p>Generated: seed={args.seed}, FS={mode_fs} Hz, WINDOW_LEN={mode_wl}</p>
 """]
 
     # Section 1: Text content + TTS audio
@@ -825,25 +840,26 @@ audio {{ margin: 5px 0; }}
 
     first_clean = None
     for i in range(n_samples):
-        window = _get_active_window(mode)
+        window, _, _ = _get_active_window(mode)
 
         spec_path = os.path.join(tmpdir, f"clean_{i}_spec.png")
-        plot_iq_spectrogram(window, FS, f"{mode} clean #{i+1}", spec_path)
+        plot_iq_spectrogram(window, mode_fs, f"{mode} clean #{i+1}", spec_path)
         html_parts.append(f'<img src="{_png_to_base64(spec_path)}">')
 
         iq_wav = os.path.join(tmpdir, f"clean_{i}_iq.wav")
-        sig_to_wav(window, FS, iq_wav, stereo_iq=True)
+        sig_to_wav(window, mode_fs, iq_wav, stereo_iq=True)
         html_parts.append(_audio_tag(iq_wav, f"Clean IQ #{i+1} (L=I, R=Q)"))
 
         if i == 0:
             first_clean = window.copy()
 
             wave_path = os.path.join(tmpdir, f"clean_{i}_wave.png")
-            plot_iq_waveform(window, FS, f"{mode} I/Q waveform", wave_path)
+            plot_iq_waveform(window, mode_fs, f"{mode} I/Q waveform",
+                             wave_path)
             html_parts.append(f'<img src="{_png_to_base64(wave_path)}">')
 
             psd_path = os.path.join(tmpdir, f"clean_{i}_psd.png")
-            plot_psd(window, FS, f"{mode} PSD", psd_path)
+            plot_psd(window, mode_fs, f"{mode} PSD", psd_path)
             html_parts.append(f'<img src="{_png_to_base64(psd_path)}">')
 
     html_parts.append("</div>")
@@ -851,7 +867,7 @@ audio {{ margin: 5px 0; }}
     # Section 3: SNR comparison grid
     html_parts.append("<h2>3. SNR Comparison</h2>")
     grid_path = os.path.join(tmpdir, "snr_grid.png")
-    plot_snr_grid(first_clean, FS, mode, grid_path)
+    plot_snr_grid(first_clean, mode_fs, mode, grid_path)
     html_parts.append(f'<img src="{_png_to_base64(grid_path)}" '
                        f'style="max-width:100%">')
 
@@ -860,17 +876,17 @@ audio {{ margin: 5px 0; }}
     html_parts.append('<div class="grid">')
 
     for scenario_name in SCENARIO_NAMES:
-        scenario_fn = _SCENARIO_FUNCS[scenario_name]
-        impaired = scenario_fn(first_clean.copy(), 10, FS)
+        sc_fn = _SCENARIO_FUNCS[scenario_name]
+        impaired = sc_fn(first_clean.copy(), 10, mode_fs)
 
         ba_path = os.path.join(tmpdir, f"scenario_{scenario_name}.png")
-        plot_before_after(first_clean, impaired, FS, scenario_name, 10,
+        plot_before_after(first_clean, impaired, mode_fs, scenario_name, 10,
                            ba_path)
         html_parts.append(f'<div style="flex:1 1 45%;min-width:400px">')
         html_parts.append(f'<img src="{_png_to_base64(ba_path)}">')
 
         imp_wav = os.path.join(tmpdir, f"scenario_{scenario_name}.wav")
-        sig_to_wav(impaired, FS, imp_wav, stereo_iq=True)
+        sig_to_wav(impaired, mode_fs, imp_wav, stereo_iq=True)
         html_parts.append(_audio_tag(imp_wav, f"{scenario_name} @ 10 dB"))
         html_parts.append("</div>")
 
@@ -878,9 +894,9 @@ audio {{ margin: 5px 0; }}
 
     # Section 5: Signal stats
     html_parts.append("<h2>5. Signal Statistics</h2><pre>")
-    sig = SYNTHESIZERS[mode]()
+    sig = synth_fn(fs=mode_fs, window_len=mode_wl)
     html_parts.append(f"Raw signal length: {len(sig)} samples "
-                       f"({len(sig)/FS:.3f}s)\n")
+                       f"({len(sig)/mode_fs:.3f}s)\n")
     html_parts.append(f"Power: {np.mean(np.abs(normalize_power(sig))**2):.4f}\n")
     html_parts.append(f"Peak I: {np.max(np.abs(sig.real)):.4f}\n")
     html_parts.append(f"Peak Q: {np.max(np.abs(sig.imag)):.4f}\n")
@@ -889,7 +905,7 @@ audio {{ margin: 5px 0; }}
 
     # Bandwidth estimate
     spec = np.abs(np.fft.fftshift(np.fft.fft(normalize_power(sig))))**2
-    freqs = np.fft.fftshift(np.fft.fftfreq(len(sig), 1/FS))
+    freqs = np.fft.fftshift(np.fft.fftfreq(len(sig), 1/mode_fs))
     spec_db = 10 * np.log10(spec / spec.max() + 1e-30)
     bw3_mask = spec_db > -3
     bw3_freqs = freqs[bw3_mask]
