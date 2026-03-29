@@ -383,6 +383,182 @@ def apply_freq_mask(sig, n_masks=None, max_width_frac=0.15, fs=FS):
     return np.fft.ifft(X)
 
 
+def apply_doppler_rate(sig, rate_hz_per_s, fs=FS):
+    """Time-varying frequency shift (LEO satellite passes).
+
+    Models the Doppler shift changing over time as a satellite moves
+    along its orbit, producing a linear frequency drift.
+    """
+    n = len(sig)
+    t = np.arange(n) / fs
+    # Frequency changes linearly: f(t) = f0 + rate * t
+    f0 = np.random.uniform(-500, 500)
+    inst_freq = f0 + rate_hz_per_s * t
+    phase = 2 * np.pi * np.cumsum(inst_freq) / fs
+    return sig * np.exp(1j * phase)
+
+
+def apply_tapped_delay_line(sig, delays, powers, doppler, fs=FS):
+    """ITU multipath channel models (Ped A/B, Veh A/B).
+
+    Args:
+        sig: Input complex signal.
+        delays: List of tap delays in seconds.
+        powers: List of tap powers in dB (relative to first tap).
+        doppler: Maximum Doppler frequency in Hz.
+        fs: Sample rate.
+    """
+    n = len(sig)
+    result = np.zeros(n, dtype=np.complex128)
+
+    for delay_s, power_db in zip(delays, powers):
+        delay_samples = max(0, int(delay_s * fs))
+        tap_gain = 10 ** (power_db / 20)
+
+        # Rayleigh fading with Doppler spectrum for this tap
+        noise = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
+        if doppler > 0.01:
+            freqs = np.fft.fftfreq(n, 1.0 / fs)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                jakes = np.where(
+                    np.abs(freqs) < doppler,
+                    1.0 / np.sqrt(np.maximum(1e-10,
+                                             1 - (freqs / doppler) ** 2)),
+                    0.0)
+            jakes[0] = 0.0
+            energy = np.sqrt(np.sum(jakes ** 2))
+            if energy > 1e-10:
+                jakes /= energy
+            fading = np.fft.ifft(np.fft.fft(noise) * jakes * np.sqrt(n))
+        else:
+            fading = noise
+
+        pwr = np.sqrt(np.mean(np.abs(fading) ** 2))
+        if pwr > 1e-10:
+            fading /= pwr
+
+        # Apply delayed, faded tap
+        delayed = np.zeros_like(sig)
+        if delay_samples < n:
+            delayed[delay_samples:] = sig[:-delay_samples] if delay_samples > 0 else sig
+        else:
+            delayed = sig  # No delay for first tap
+        result += tap_gain * fading * delayed
+
+    return result
+
+
+def apply_clutter(sig, clutter_type=None, scr_db=None, fs=FS):
+    """Radar clutter (Gaussian, Weibull, K-distributed).
+
+    Args:
+        sig: Input complex signal.
+        clutter_type: One of "gaussian", "weibull", "k". Random if None.
+        scr_db: Signal-to-clutter ratio in dB. Random if None.
+        fs: Sample rate.
+    """
+    n = len(sig)
+    if clutter_type is None:
+        clutter_type = np.random.choice(["gaussian", "weibull", "k"])
+    if scr_db is None:
+        scr_db = np.random.uniform(0, 20)
+
+    sig_power = np.mean(np.abs(sig) ** 2)
+    if sig_power < 1e-20:
+        return sig
+
+    clutter_power = sig_power * 10 ** (-scr_db / 10)
+
+    if clutter_type == "gaussian":
+        clutter = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
+    elif clutter_type == "weibull":
+        # Weibull-distributed amplitude
+        shape = np.random.uniform(1.5, 3.0)
+        amp = np.random.weibull(shape, n)
+        phase = np.random.uniform(0, 2 * np.pi, n)
+        clutter = amp * np.exp(1j * phase)
+    else:
+        # K-distributed: product of Rayleigh and Gamma
+        shape = np.random.uniform(1.0, 10.0)
+        gamma_amp = np.random.gamma(shape, 1.0 / shape, n)
+        rayleigh = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
+        clutter = np.sqrt(gamma_amp) * rayleigh
+
+    # Normalize and scale clutter
+    clutter_rms = np.sqrt(np.mean(np.abs(clutter) ** 2))
+    if clutter_rms > 1e-10:
+        clutter *= np.sqrt(clutter_power) / clutter_rms
+
+    return sig + clutter
+
+
+def apply_ism_interference(sig, n_interferers=None, fs=FS):
+    """Bursty wideband interference (ISM band congestion / microwave oven model).
+
+    Args:
+        sig: Input complex signal.
+        n_interferers: Number of interfering sources. Random if None.
+        fs: Sample rate.
+    """
+    n = len(sig)
+    if n_interferers is None:
+        n_interferers = np.random.randint(1, 5)
+
+    sig_power = np.mean(np.abs(sig) ** 2)
+    if sig_power < 1e-20:
+        return sig
+
+    result = sig.copy()
+
+    for _ in range(n_interferers):
+        intf_type = np.random.choice(["microwave", "burst", "hopping"])
+
+        if intf_type == "microwave":
+            # Microwave oven: ~10ms bursts at 120 Hz rate, wideband
+            burst_dur = int(0.01 * fs)
+            period = int(fs / 120)
+            intf = np.zeros(n, dtype=np.complex128)
+            pos = np.random.randint(0, max(1, period))
+            while pos < n:
+                end = min(pos + burst_dur, n)
+                intf[pos:end] = (np.random.randn(end - pos) +
+                                 1j * np.random.randn(end - pos)) / np.sqrt(2)
+                pos += period
+
+        elif intf_type == "burst":
+            # Random bursty source
+            intf = np.zeros(n, dtype=np.complex128)
+            n_bursts = np.random.randint(3, 15)
+            for _ in range(n_bursts):
+                burst_start = np.random.randint(0, max(1, n - 1000))
+                burst_len = np.random.randint(100, min(5000, n - burst_start))
+                t = np.arange(burst_len) / fs
+                freq = np.random.uniform(-fs * 0.3, fs * 0.3)
+                intf[burst_start:burst_start + burst_len] = \
+                    np.exp(2j * np.pi * freq * t)
+
+        else:
+            # Frequency hopping
+            intf = np.zeros(n, dtype=np.complex128)
+            hop_dur = int(np.random.uniform(0.001, 0.01) * fs)
+            n_hops = max(1, n // hop_dur)
+            for h in range(n_hops):
+                start = h * hop_dur
+                end = min(start + hop_dur, n)
+                t = np.arange(end - start) / fs
+                freq = np.random.uniform(-fs * 0.4, fs * 0.4)
+                intf[start:end] = np.exp(2j * np.pi * freq * t)
+
+        # Scale interference
+        rel_db = np.random.uniform(-15, -3)
+        intf_power = np.mean(np.abs(intf) ** 2)
+        if intf_power > 1e-20:
+            scale = np.sqrt(sig_power * 10 ** (rel_db / 10) / intf_power)
+            result += scale * intf
+
+    return result
+
+
 def extract_windows(iq_signal, window_len=WINDOW_LEN, stride=None,
                      power_threshold=None):
     """Extract non-silent training windows from a continuous IQ signal."""

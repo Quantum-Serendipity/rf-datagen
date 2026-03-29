@@ -14,6 +14,8 @@ from .effects import (
     apply_image_rejection,
     apply_impulse_noise, apply_adjacent_signal,
     apply_powerline_hum, apply_narrowband_birdie,
+    apply_doppler_rate, apply_tapped_delay_line,
+    apply_clutter, apply_ism_interference,
 )
 from .transmitter import TransmitterModel
 
@@ -373,6 +375,147 @@ def _apply_scenario_auroral(sig, snr_db, fs=FS):
     return normalize_power(sig)
 
 
+# --- 7 new scenario profiles for multi-domain coverage ---
+
+def _apply_scenario_indoor_multipath(sig, snr_db, fs=FS):
+    """Indoor multipath: WiFi, BLE, Zigbee, DECT."""
+    mfo = _config.max_freq_offset
+    # Rician K=0-10 dB (LOS often present indoors)
+    sig = apply_rician(sig, fs, k_db=np.random.uniform(0, 10))
+    # Short multipath delays (< 100 ns in indoor)
+    if np.random.random() < 0.6:
+        delays = [0, 50e-9, 100e-9]
+        powers = [0, np.random.uniform(-6, -3), np.random.uniform(-12, -6)]
+        doppler = np.random.uniform(1, 10)
+        sig = apply_tapped_delay_line(sig, delays, powers, doppler, fs)
+    sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
+    if np.random.random() < 0.3:
+        sig = apply_iq_imbalance(sig)
+    if np.random.random() < 0.2:
+        sig = apply_dc_offset(sig)
+    sig = add_awgn(sig, snr_db)
+    return normalize_power(sig)
+
+
+def _apply_scenario_leo_satellite(sig, snr_db, fs=FS):
+    """LEO satellite: Iridium, NOAA APT, COSPAS-SARSAT."""
+    mfo = _config.max_freq_offset
+    # Large Doppler shift/rate from LEO pass
+    doppler_rate = np.random.uniform(10, 100)  # Hz/s
+    sig = apply_doppler_rate(sig, doppler_rate, fs)
+    # Free-space path loss variation (slow amplitude fading)
+    if np.random.random() < 0.4:
+        sig = apply_qsb(sig, fs)
+    # Scintillation (ionospheric)
+    if np.random.random() < 0.3:
+        sig = apply_rician(sig, fs, k_db=np.random.uniform(5, 15))
+    sig = freq_shift(sig, np.random.uniform(-mfo * 2, mfo * 2), fs)
+    if np.random.random() < 0.2:
+        sig = apply_phase_noise(sig, fs)
+    if np.random.random() < 0.2:
+        sig = apply_dc_offset(sig)
+    sig = add_awgn(sig, snr_db)
+    return normalize_power(sig)
+
+
+def _apply_scenario_automotive(sig, snr_db, fs=FS):
+    """Automotive: TPMS, BLE beacon, V2X."""
+    mfo = _config.max_freq_offset
+    # Rayleigh with high Doppler (100-500 Hz for highway speeds)
+    doppler = np.random.uniform(100, 500)
+    sig = apply_rician(sig, fs, k_db=np.random.uniform(-5, 3))
+    sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
+    # Ignition impulse noise
+    if np.random.random() < 0.4:
+        sig = apply_impulse_noise(sig, fs)
+    if np.random.random() < 0.3:
+        sig = apply_iq_imbalance(sig)
+    if np.random.random() < 0.2:
+        sig = apply_dc_offset(sig)
+    sig = add_awgn(sig, snr_db)
+    return normalize_power(sig)
+
+
+def _apply_scenario_urban_cellular(sig, snr_db, fs=FS):
+    """Urban cellular: GSM, LTE, 5G NR."""
+    mfo = _config.max_freq_offset
+    # ITU Pedestrian or Vehicular delay profile
+    profile = np.random.choice(["ped_a", "ped_b", "veh_a"])
+    if profile == "ped_a":
+        delays = [0, 110e-9, 190e-9, 410e-9]
+        powers = [0, -9.7, -19.2, -22.8]
+        doppler = np.random.uniform(1, 10)
+    elif profile == "ped_b":
+        delays = [0, 200e-9, 800e-9, 1200e-9, 2300e-9, 3700e-9]
+        powers = [0, -0.9, -4.9, -8.0, -7.8, -23.9]
+        doppler = np.random.uniform(1, 10)
+    else:  # veh_a
+        delays = [0, 310e-9, 710e-9, 1090e-9, 1730e-9, 2510e-9]
+        powers = [0, -1.0, -9.0, -10.0, -15.0, -20.0]
+        doppler = np.random.uniform(50, 200)
+
+    sig = apply_tapped_delay_line(sig, delays, powers, doppler, fs)
+    sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
+    # Co-channel interference
+    if np.random.random() < 0.3:
+        sig = apply_adjacent_signal(sig, fs)
+    if np.random.random() < 0.2:
+        sig = apply_iq_imbalance(sig)
+    if np.random.random() < 0.2:
+        sig = apply_dc_offset(sig)
+    sig = add_awgn(sig, snr_db)
+    return normalize_power(sig)
+
+
+def _apply_scenario_radar_clutter(sig, snr_db, fs=FS):
+    """Radar clutter: all radar types."""
+    mfo = _config.max_freq_offset
+    # Ground/sea clutter
+    clutter_type = np.random.choice(["gaussian", "weibull", "k"])
+    scr_db = np.random.uniform(5, 25)
+    sig = apply_clutter(sig, clutter_type, scr_db, fs)
+    sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
+    if np.random.random() < 0.3:
+        sig = apply_phase_noise(sig, fs)
+    if np.random.random() < 0.2:
+        sig = apply_dc_offset(sig)
+    sig = add_awgn(sig, snr_db)
+    return normalize_power(sig)
+
+
+def _apply_scenario_maritime(sig, snr_db, fs=FS):
+    """Maritime: AIS, maritime VHF."""
+    mfo = _config.max_freq_offset
+    # 2-ray sea-surface multipath
+    delays = [0, np.random.uniform(0.5e-3, 5e-3)]
+    powers = [0, np.random.uniform(-10, -3)]
+    doppler = np.random.uniform(0.5, 5)
+    sig = apply_tapped_delay_line(sig, delays, powers, doppler, fs)
+    sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
+    # High atmospheric noise (maritime environment)
+    if np.random.random() < 0.4:
+        sig = apply_atmospheric_noise(sig, fs)
+    if np.random.random() < 0.2:
+        sig = apply_dc_offset(sig)
+    sig = add_awgn(sig, snr_db)
+    return normalize_power(sig)
+
+
+def _apply_scenario_ism_congested(sig, snr_db, fs=FS):
+    """ISM congested: BLE, WiFi, Zigbee, LoRa."""
+    mfo = _config.max_freq_offset
+    # Multi-source co-channel interference
+    n_interferers = np.random.randint(1, 5)
+    sig = apply_ism_interference(sig, n_interferers, fs)
+    sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
+    if np.random.random() < 0.3:
+        sig = apply_iq_imbalance(sig)
+    if np.random.random() < 0.2:
+        sig = apply_dc_offset(sig)
+    sig = add_awgn(sig, snr_db)
+    return normalize_power(sig)
+
+
 # --- Scenario registry ---
 
 _SCENARIO_FUNCS = {
@@ -388,6 +531,14 @@ _SCENARIO_FUNCS = {
     "vintage": _apply_scenario_vintage,
     "near_far": _apply_scenario_near_far,
     "auroral": _apply_scenario_auroral,
+    # Sprint 4 — multi-domain scenarios
+    "indoor_multipath": _apply_scenario_indoor_multipath,
+    "leo_satellite": _apply_scenario_leo_satellite,
+    "automotive": _apply_scenario_automotive,
+    "urban_cellular": _apply_scenario_urban_cellular,
+    "radar_clutter": _apply_scenario_radar_clutter,
+    "maritime": _apply_scenario_maritime,
+    "ism_congested": _apply_scenario_ism_congested,
 }
 
 SCENARIO_NAMES = list(_SCENARIO_FUNCS.keys())

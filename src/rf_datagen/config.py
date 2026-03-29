@@ -92,6 +92,7 @@ class DatasetConfig:
     output_dir: str = "./output"
     seed: int = 42
     workers: int = 0  # 0 = auto; used as fallback for generators without workers
+    domains: list[str] = field(default_factory=lambda: ["narrowband"])
 
 
 class ConfigError(ValueError):
@@ -118,15 +119,23 @@ class Config:
         "js8call": GeneratorConfig(enabled=False),
         "op25": GeneratorConfig(enabled=False),
         "hacktv": GeneratorConfig(enabled=False),
+        "synthetic_moderate": GeneratorConfig(samples_per_class=2000),
+        "synthetic_wideband": GeneratorConfig(samples_per_class=1000),
     })
 
     def validate(self):
         """Validate configuration values. Raises ConfigError on problems."""
+        from .domains import DOMAINS
         errors = []
         if self.dataset.sample_rate <= 0:
             errors.append("dataset.sample_rate must be > 0")
         if self.dataset.window_length <= 0:
             errors.append("dataset.window_length must be > 0")
+        for d in self.dataset.domains:
+            if d not in DOMAINS:
+                errors.append(
+                    f"dataset.domains: unknown domain '{d}' "
+                    f"(valid: {list(DOMAINS.keys())})")
         if not self.impairments.snr_levels:
             errors.append("impairments.snr_levels must not be empty")
         if self.impairments.window_stride < 0:
@@ -182,7 +191,7 @@ def _merge_generator(base: GeneratorConfig, toml_dict: dict) -> GeneratorConfig:
 
 _KNOWN_SECTIONS = {"dataset", "impairments", "generators"}
 _KNOWN_DATASET_KEYS = {"sample_rate", "window_length", "output_dir", "seed",
-                       "workers"}
+                       "workers", "domains"}
 _KNOWN_IMPAIRMENT_KEYS = {"snr_levels", "max_freq_offset", "watterson_model",
                           "window_stride", "window_power_threshold", "scenarios"}
 _KNOWN_GENERATOR_KEYS = {

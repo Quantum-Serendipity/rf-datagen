@@ -15,6 +15,8 @@ from .ardop import ArdopGenerator
 from .js8call import Js8callGenerator
 from .op25 import Op25Generator
 from .hacktv import HacktvGenerator
+from .synthetic_moderate import SyntheticModerateGenerator
+from .synthetic_wideband import SyntheticWidebandGenerator
 
 GENERATORS = {
     "synthetic": SyntheticGenerator,
@@ -32,6 +34,8 @@ GENERATORS = {
     "js8call": Js8callGenerator,
     "op25": Op25Generator,
     "hacktv": HacktvGenerator,
+    "synthetic_moderate": SyntheticModerateGenerator,
+    "synthetic_wideband": SyntheticWidebandGenerator,
 }
 
 __all__ = ["GENERATORS"]

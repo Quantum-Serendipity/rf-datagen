@@ -4,7 +4,8 @@ import numpy as np
 from scipy.signal import fftconvolve
 
 from ..constants import FS, WINDOW_LEN
-from ..dsp import gfsk_mod, fsk_mod, ook_mod, _4fsk_mod, _gmsk_mod, ofdm_carriers
+from ..dsp import (gfsk_mod, fsk_mod, ook_mod, psk_mod,
+                    _4fsk_mod, _gmsk_mod, _pi4dqpsk_mod, ofdm_carriers)
 from ..content.typing import CWFistModel, text_to_varicode_bits, text_to_morse_elements
 from ..content.ham_text import PSK_TEXTS, CW_PHRASES
 from .base import BaseGenerator
@@ -874,6 +875,466 @@ def synth_drm(*, fs=FS, window_len=WINDOW_LEN):
 
 
 # ---------------------------------------------------------------------------
+# Gen5 — universal RF narrowband synthesizers
+# ---------------------------------------------------------------------------
+
+def synth_wwvb(*, fs=FS, window_len=WINDOW_LEN):
+    """WWVB — 1-bps BCD time code with 3-level AM envelope.
+
+    60 kHz carrier, 1 pulse/s: 200ms=marker, 500ms=one, 800ms=zero.
+    At baseband we synthesize the AM envelope pattern.
+    """
+    n_seconds = max(10, window_len * 5 // fs + 5)
+    sps = fs  # 1 pulse per second
+
+    segments = []
+    for _ in range(n_seconds):
+        # Pulse type: marker (0.2s low), one (0.5s low), zero (0.8s low)
+        pulse_type = np.random.choice([0.2, 0.5, 0.8], p=[0.15, 0.42, 0.43])
+        low_samples = max(1, int(pulse_type * fs))
+        high_samples = max(1, sps - low_samples)
+        # Low power during pulse, high power rest of second
+        seg = np.ones(sps)
+        seg[:low_samples] = 0.17  # ~17% carrier power during pulse
+        segments.append(seg)
+
+    envelope = np.concatenate(segments)
+    t = np.arange(len(envelope)) / fs
+    carrier_freq = np.random.uniform(-200, 200)
+    return envelope * np.exp(2j * np.pi * carrier_freq * t)
+
+
+def synth_dcf77(*, fs=FS, window_len=WINDOW_LEN):
+    """DCF77 — 59-bit/min BCD time code, 100ms=0 / 200ms=1 AM pulses."""
+    n_seconds = max(10, window_len * 5 // fs + 5)
+    sps = fs
+
+    segments = []
+    for i in range(n_seconds):
+        if i == 59:
+            # Minute marker — no pulse
+            segments.append(np.ones(sps))
+            continue
+        bit = np.random.randint(0, 2)
+        pulse_dur = 0.1 if bit == 0 else 0.2
+        low_samples = max(1, int(pulse_dur * fs))
+        seg = np.ones(sps)
+        seg[:low_samples] = 0.15  # Power reduction during pulse
+        segments.append(seg)
+
+    envelope = np.concatenate(segments)
+    t = np.arange(len(envelope)) / fs
+    carrier_freq = np.random.uniform(-200, 200)
+    return envelope * np.exp(2j * np.pi * carrier_freq * t)
+
+
+def synth_ndb(*, fs=FS, window_len=WINDOW_LEN):
+    """NDB — AM carrier at 400/1020 Hz with Morse code ident keying."""
+    n = max(window_len * 10, int(2.0 * fs))
+    t = np.arange(n) / fs
+
+    # AM carrier with modulation tone
+    mod_freq = np.random.choice([400.0, 1020.0])
+    carrier_freq = np.random.uniform(-500, 500)
+
+    # Morse ident keying (random 2-3 letter callsign)
+    ident_len = np.random.randint(2, 4)
+    wpm = np.random.uniform(5, 10)
+    unit = 1.2 / wpm
+    dit_dur = unit
+    dah_dur = 3 * unit
+
+    envelope = np.ones(n)
+    pos = 0
+    for _ in range(ident_len):
+        # Random element: dit or dah
+        n_elements = np.random.randint(1, 5)
+        for _ in range(n_elements):
+            is_dah = np.random.random() < 0.4
+            dur = dah_dur if is_dah else dit_dur
+            samp = max(1, int(dur * fs))
+            end = min(pos + samp, n)
+            # Keying on
+            envelope[pos:end] = 1.0
+            pos = end
+            # Inter-element gap
+            gap = max(1, int(unit * fs))
+            pos = min(pos + gap, n)
+        # Inter-letter gap
+        gap = max(1, int(3 * unit * fs))
+        # Reduce carrier during gaps
+        end = min(pos + gap, n)
+        envelope[pos:end] = 0.3
+        pos = end
+
+    # AM modulation
+    mod = 1.0 + 0.8 * envelope * np.sin(2 * np.pi * mod_freq * t)
+    return mod * np.exp(2j * np.pi * carrier_freq * t)
+
+
+def synth_acars(*, fs=FS, window_len=WINDOW_LEN):
+    """ACARS — 2400 bps AM-MSK with ACARS frame structure."""
+    baud = 2400.0
+    n_frames = np.random.randint(2, 6)
+    segments = []
+
+    for _ in range(n_frames):
+        # Preamble: 0xFFFF (16 bits alternating at char level)
+        preamble = np.array([1, 0] * 64)
+        # SOH + mode char + address + data + BCS
+        data_bits = np.random.randint(0, 2, np.random.randint(100, 400))
+        bits = np.concatenate([preamble, data_bits])
+        # MSK modulation (GMSK with BT=infinity approximated as MSK)
+        seg = _gmsk_mod(bits, baud, bt=2.0, fs=fs)
+        # AM envelope (ACARS uses AM-MSK)
+        t_seg = np.arange(len(seg)) / fs
+        am_env = 1.0 + 0.85 * np.ones(len(seg))
+        seg = seg * am_env
+        segments.append(seg)
+        # Inter-frame gap
+        gap = np.zeros(int(np.random.uniform(0.1, 0.5) * fs),
+                       dtype=np.complex128)
+        segments.append(gap)
+
+    return np.concatenate(segments)
+
+
+def synth_selcal(*, fs=FS, window_len=WINDOW_LEN):
+    """SELCAL — two sequential 1s dual-tone bursts from 16-tone table."""
+    selcal_freqs = [
+        312.6, 346.7, 384.6, 426.6, 473.2, 524.8, 582.1, 645.7,
+        716.1, 794.3, 881.0, 977.2, 1083.9, 1202.3, 1333.5, 1479.1,
+    ]
+    burst_dur = 1.0
+    gap_dur = 0.2
+    n_bursts = 2
+    segments = []
+
+    for _ in range(n_bursts):
+        # Select 2 tones for this burst
+        idx = np.random.choice(len(selcal_freqs), 2, replace=False)
+        f1, f2 = selcal_freqs[idx[0]], selcal_freqs[idx[1]]
+        n_samp = max(1, int(burst_dur * fs))
+        t = np.arange(n_samp) / fs
+        tone = (np.sin(2 * np.pi * f1 * t) +
+                np.sin(2 * np.pi * f2 * t)) / 2.0
+        # Convert to analytic
+        analytic = np.fft.ifft(
+            2 * np.fft.fft(tone) * (np.arange(n_samp) < n_samp // 2))
+        segments.append(analytic)
+        # Gap between bursts
+        gap = np.zeros(max(1, int(gap_dur * fs)), dtype=np.complex128)
+        segments.append(gap)
+
+    return np.concatenate(segments)
+
+
+def synth_atis(*, fs=FS, window_len=WINDOW_LEN):
+    """ATIS — AM voice broadcast with speech-like formant cadence."""
+    # Reuse AM pattern with speech-like characteristics
+    n = max(window_len * 10, int(3.0 * fs))
+    t = np.arange(n) / fs
+    audio = np.zeros(n)
+
+    # Speech-like formants with slow cadence
+    formant_centers = [300, 700, 1100, 1800, 2500]
+    n_formants = np.random.randint(3, 6)
+    for _ in range(n_formants):
+        center = np.random.choice(formant_centers)
+        for _ in range(np.random.randint(2, 5)):
+            f = center + np.random.uniform(-100, 100)
+            a = np.random.uniform(0.1, 1.0)
+            audio += a * np.sin(2 * np.pi * f * t +
+                                np.random.uniform(0, 2 * np.pi))
+
+    # Slow, deliberate speaking cadence (ATIS is monotone, measured)
+    env_freq = np.random.uniform(2, 5)
+    envelope = np.clip(np.sin(2 * np.pi * env_freq * t) + 0.4, 0, 1)
+    # Regular pauses (ATIS has structured pauses)
+    pause_interval = int(np.random.uniform(1.0, 2.0) * fs)
+    for start in range(0, n, pause_interval):
+        pause_len = int(np.random.uniform(0.2, 0.5) * fs)
+        end = min(start + pause_len, n)
+        envelope[start:end] *= 0.02
+
+    audio = audio * envelope
+    audio /= np.abs(audio).max() + 1e-10
+    # AM modulation
+    mod_depth = np.random.uniform(0.7, 0.95)
+    carrier_freq = np.random.uniform(-500, 500)
+    carrier = np.exp(2j * np.pi * carrier_freq * t)
+    return (1.0 + mod_depth * audio) * carrier
+
+
+def synth_ais(*, fs=FS, window_len=WINDOW_LEN):
+    """AIS — GMSK at 9600 bps with AIS slot structure."""
+    baud = 9600.0
+    n_slots = np.random.randint(3, 8)
+    segments = []
+
+    for _ in range(n_slots):
+        # Training sequence (24 bits alternating)
+        training = np.array([0, 1] * 12)
+        # Start flag 0x7E
+        flag = np.array([0, 1, 1, 1, 1, 1, 1, 0])
+        # Data (168 bits)
+        data = np.random.randint(0, 2, 168)
+        # CRC-16 (16 bits)
+        crc = np.random.randint(0, 2, 16)
+        # End flag
+        bits = np.concatenate([training, flag, data, crc, flag])
+        seg = _gmsk_mod(bits, baud, bt=0.4, fs=fs)
+        segments.append(seg)
+        # Slot gap
+        gap = np.zeros(int(np.random.uniform(0.01, 0.05) * fs),
+                       dtype=np.complex128)
+        segments.append(gap)
+
+    return np.concatenate(segments)
+
+
+def synth_sigfox(*, fs=FS, window_len=WINDOW_LEN):
+    """Sigfox — ultra-narrowband DBPSK at 100 bps."""
+    baud = 100.0
+    n_frames = np.random.randint(3, 8)
+    segments = []
+
+    for _ in range(n_frames):
+        # Sigfox frame: preamble + sync + payload (~100-200 bits)
+        n_bits = np.random.randint(80, 200)
+        bits = np.random.randint(0, 2, n_bits)
+        seg = psk_mod(bits, baud, fs=fs, order=2)
+        segments.append(seg)
+        gap = np.zeros(int(np.random.uniform(0.5, 2.0) * fs),
+                       dtype=np.complex128)
+        segments.append(gap)
+
+    return np.concatenate(segments)
+
+
+def synth_tpms(*, fs=FS, window_len=WINDOW_LEN):
+    """TPMS — Manchester-encoded OOK or FSK at 4.8-19.2 kbps."""
+    variant = np.random.choice(["ook", "fsk"])
+    baud = np.random.choice([4800, 9600, 19200])
+    n_bursts = np.random.randint(3, 8)
+    segments = []
+
+    for _ in range(n_bursts):
+        # Preamble + sync + sensor data
+        n_bits = np.random.randint(50, 120)
+        # Manchester encoding: each bit → two chips
+        raw_bits = np.random.randint(0, 2, n_bits)
+        manchester = []
+        for b in raw_bits:
+            if b:
+                manchester.extend([1, 0])
+            else:
+                manchester.extend([0, 1])
+        chips = np.array(manchester)
+
+        if variant == "ook":
+            seg = ook_mod(chips, np.random.uniform(500, 2000),
+                          1.0 / baud, fs=fs)
+        else:
+            seg = fsk_mod(chips, 2, baud / 4.0, 1.0 / baud, fs=fs)
+        segments.append(seg)
+        # Inter-burst gap (TPMS transmits periodically)
+        gap = np.zeros(int(np.random.uniform(0.05, 0.3) * fs),
+                       dtype=np.complex128)
+        segments.append(gap)
+
+    return np.concatenate(segments)
+
+
+def synth_scada_telemetry(*, fs=FS, window_len=WINDOW_LEN):
+    """SCADA telemetry — FSK at 300-1200 baud with poll/response structure."""
+    baud = np.random.choice([300.0, 600.0, 1200.0])
+    shift = np.random.choice([200.0, 500.0, 1000.0])
+    n_exchanges = np.random.randint(3, 8)
+    segments = []
+
+    for _ in range(n_exchanges):
+        # Poll (short)
+        poll_bits = np.random.randint(0, 2, np.random.randint(20, 50))
+        poll = fsk_mod(poll_bits, 2, shift, 1.0 / baud, fs=fs)
+        segments.append(poll)
+        # Turnaround delay
+        gap = np.zeros(int(np.random.uniform(0.05, 0.2) * fs),
+                       dtype=np.complex128)
+        segments.append(gap)
+        # Response (longer)
+        resp_bits = np.random.randint(0, 2, np.random.randint(50, 200))
+        resp = fsk_mod(resp_bits, 2, shift, 1.0 / baud, fs=fs)
+        segments.append(resp)
+        # Inter-exchange gap
+        gap = np.zeros(int(np.random.uniform(0.1, 0.5) * fs),
+                       dtype=np.complex128)
+        segments.append(gap)
+
+    return np.concatenate(segments)
+
+
+def synth_tetra(*, fs=FS, window_len=WINDOW_LEN):
+    """TETRA — π/4-DQPSK, TDMA 4-slot frame structure.
+
+    At 12 kHz FS we capture the baseband modulation characteristics.
+    TETRA uses 18 ksym/s; we scale down proportionally.
+    """
+    # Scale symbol rate to fit narrowband
+    sym_rate = min(4800, 18000)  # Cap at 4800 for 12 kHz fs
+    sps = max(1, int(fs / sym_rate))
+    slot_dur = 0.0141  # 14.167ms per slot
+    frame_dur = 4 * slot_dur  # ~56.67ms
+
+    n_frames = np.random.randint(5, 15)
+    segments = []
+
+    for _ in range(n_frames):
+        for slot in range(4):
+            # Each slot: sync + data dibits
+            n_sym = max(10, int(slot_dur * sym_rate))
+            dibits = np.random.randint(0, 4, n_sym)
+            seg = _pi4dqpsk_mod(dibits, sym_rate, fs=fs)
+            segments.append(seg)
+            # Guard time between slots
+            guard = np.zeros(max(1, int(0.001 * fs)), dtype=np.complex128)
+            segments.append(guard)
+
+    return np.concatenate(segments)
+
+
+def synth_spot_jammer(*, fs=FS, window_len=WINDOW_LEN):
+    """Spot jammer — narrowband Gaussian noise at random center frequency."""
+    n = max(window_len * 10, int(1.0 * fs))
+    bw = np.random.uniform(50, 500)  # Hz
+    center_freq = np.random.uniform(-fs * 0.3, fs * 0.3)
+
+    noise = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
+    # Band-limit
+    freqs = np.fft.fftfreq(n, 1.0 / fs)
+    mask = np.exp(-0.5 * ((freqs - center_freq) / (bw / 2)) ** 2)
+    sig = np.fft.ifft(np.fft.fft(noise) * mask)
+    return sig
+
+
+def synth_sweep_jammer(*, fs=FS, window_len=WINDOW_LEN):
+    """Sweep jammer — linear frequency sweep with optional noise overlay."""
+    n = max(window_len * 10, int(1.0 * fs))
+    t = np.arange(n) / fs
+
+    sweep_rate = np.random.uniform(500, 5000)  # Hz/s
+    start_freq = np.random.uniform(-2000, 2000)
+
+    freq = start_freq + sweep_rate * t
+    phase = 2 * np.pi * np.cumsum(freq) / fs
+    sig = np.exp(1j * phase)
+
+    # Optional noise overlay
+    if np.random.random() < 0.5:
+        noise_level = np.random.uniform(0.05, 0.3)
+        noise = noise_level * (np.random.randn(n) +
+                               1j * np.random.randn(n)) / np.sqrt(2)
+        sig = sig + noise
+
+    return sig
+
+
+def synth_noise_jammer(*, fs=FS, window_len=WINDOW_LEN):
+    """Noise jammer — shaped Gaussian noise filling channel, high power."""
+    n = max(window_len * 10, int(1.0 * fs))
+
+    # Wideband noise with spectral shaping
+    noise = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
+
+    # Apply spectral shaping to make it more realistic
+    shape_type = np.random.choice(["flat", "pink", "bandlimited"])
+    if shape_type == "pink":
+        freqs = np.fft.fftfreq(n, 1.0 / fs)
+        scale = 1.0 / np.sqrt(np.abs(freqs) + 1.0)
+        noise = np.fft.ifft(np.fft.fft(noise) * scale)
+    elif shape_type == "bandlimited":
+        bw = np.random.uniform(2000, fs * 0.45)
+        freqs = np.fft.fftfreq(n, 1.0 / fs)
+        mask = np.abs(freqs) < bw / 2
+        noise = np.fft.ifft(np.fft.fft(noise) * mask)
+
+    # Scale to high power
+    noise *= np.random.uniform(2.0, 5.0)
+    return noise
+
+
+def synth_barrage_jammer(*, fs=FS, window_len=WINDOW_LEN):
+    """Barrage jammer — wideband noise with periodic AM envelope (1-100 Hz)."""
+    n = max(window_len * 10, int(1.0 * fs))
+    t = np.arange(n) / fs
+
+    # Wideband noise base
+    noise = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
+
+    # Periodic AM envelope
+    am_freq = np.random.uniform(1, 100)
+    mod_depth = np.random.uniform(0.3, 0.9)
+    envelope = 1.0 + mod_depth * np.sin(2 * np.pi * am_freq * t +
+                                         np.random.uniform(0, 2 * np.pi))
+    return noise * envelope * np.random.uniform(2.0, 5.0)
+
+
+def synth_pulse_radar(*, fs=FS, window_len=WINDOW_LEN):
+    """Pulse radar — rectangular envelope on carrier, PRF 100-5000 Hz."""
+    n = max(window_len * 10, int(1.0 * fs))
+    t = np.arange(n) / fs
+
+    prf = np.random.uniform(100, 5000)  # Hz
+    duty = np.random.uniform(0.01, 0.10)
+    pulse_dur = duty / prf
+    pulse_samples = max(1, int(pulse_dur * fs))
+    pri_samples = max(pulse_samples + 1, int(fs / prf))
+
+    carrier_freq = np.random.uniform(-2000, 2000)
+
+    envelope = np.zeros(n)
+    pos = 0
+    while pos < n:
+        end = min(pos + pulse_samples, n)
+        envelope[pos:end] = 1.0
+        pos += pri_samples
+
+    return envelope * np.exp(2j * np.pi * carrier_freq * t)
+
+
+def synth_barker_radar(*, fs=FS, window_len=WINDOW_LEN):
+    """Barker radar — Barker-13 BPSK-coded pulses within pulse envelope."""
+    barker13 = np.array([1, 1, 1, 1, 1, -1, -1, 1, 1, -1, 1, -1, 1])
+    n = max(window_len * 10, int(1.0 * fs))
+    t = np.arange(n) / fs
+
+    prf = np.random.uniform(200, 3000)
+    chip_rate = np.random.uniform(500, 3000)
+    chip_samples = max(1, int(fs / chip_rate))
+    pulse_samples = len(barker13) * chip_samples
+    pri_samples = max(pulse_samples + 1, int(fs / prf))
+
+    carrier_freq = np.random.uniform(-2000, 2000)
+
+    sig = np.zeros(n, dtype=np.complex128)
+    pos = 0
+    while pos < n:
+        # Generate one coded pulse
+        for ci, chip in enumerate(barker13):
+            cs = pos + ci * chip_samples
+            ce = min(cs + chip_samples, n)
+            if cs >= n:
+                break
+            phase = 0.0 if chip == 1 else np.pi
+            seg_t = t[cs:ce]
+            sig[cs:ce] = np.exp(1j * (2 * np.pi * carrier_freq * seg_t +
+                                       phase))
+        pos += pri_samples
+
+    return sig
+
+
+# ---------------------------------------------------------------------------
 # Synthesizer registry
 # ---------------------------------------------------------------------------
 
@@ -897,6 +1358,14 @@ SYNTHESIZERS = {
     "BELL103": synth_bell103, "BELL202": synth_bell202, "ATV": synth_atv,
     "LORA": synth_lora, "POCSAG": synth_pocsag, "FLEX": synth_flex,
     "HDRADIO": synth_hdradio, "DTMF": synth_dtmf, "DRM": synth_drm,
+    # Gen5 — universal RF narrowband
+    "WWVB": synth_wwvb, "DCF77": synth_dcf77, "NDB": synth_ndb,
+    "ACARS": synth_acars, "SELCAL": synth_selcal, "ATIS": synth_atis,
+    "AIS": synth_ais, "SIGFOX": synth_sigfox, "TPMS": synth_tpms,
+    "SCADA_TELEMETRY": synth_scada_telemetry, "TETRA": synth_tetra,
+    "SPOT_JAMMER": synth_spot_jammer, "SWEEP_JAMMER": synth_sweep_jammer,
+    "NOISE_JAMMER": synth_noise_jammer, "BARRAGE_JAMMER": synth_barrage_jammer,
+    "PULSE_RADAR": synth_pulse_radar, "BARKER_RADAR": synth_barker_radar,
 }
 
 SYNTHETIC_CLASSES = list(SYNTHESIZERS.keys())

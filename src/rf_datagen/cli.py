@@ -12,6 +12,7 @@ import numpy as np
 
 from .config import load_config, GeneratorConfig
 from .constants import SIGNAL_LABELS, WINDOW_LEN
+from .domains import DOMAINS, labels_for_domain
 from .generators import GENERATORS
 from . import _state
 from .logging_config import setup_logging, get_logger
@@ -29,6 +30,8 @@ def cmd_generate(args):
         cfg.dataset.output_dir = args.output
     if args.seed is not None:
         cfg.dataset.seed = args.seed
+    if args.domains:
+        cfg.dataset.domains = [d.strip() for d in args.domains.split(",")]
 
     output_dir = cfg.dataset.output_dir
     os.makedirs(output_dir, exist_ok=True)
@@ -97,56 +100,113 @@ def cmd_generate(args):
 
     t_start = time.time()
     all_results = {}
+    enabled_domains = cfg.dataset.domains
+
     try:
-        for name, gen in plan:
-            if _state.shutdown_requested():
-                log.warning("Shutdown requested — skipping %s", name)
-                break
-            gen_results = gen.run(output_dir, seed=cfg.dataset.seed)
-            if gen_results:
-                all_results.update(gen_results)
+        for domain_name in enabled_domains:
+            domain = DOMAINS[domain_name]
+            domain_labels = set(labels_for_domain(domain_name))
+
+            # Use domain-specific output subdirectory when multiple domains
+            if len(enabled_domains) > 1:
+                domain_dir = os.path.join(output_dir, domain_name)
+            else:
+                domain_dir = output_dir
+
+            for name, gen in plan:
+                if _state.shutdown_requested():
+                    log.warning("Shutdown requested — skipping %s", name)
+                    break
+
+                # Filter generator classes to this domain
+                domain_classes = [c for c in gen.signal_classes
+                                  if c in domain_labels]
+                if not domain_classes:
+                    continue
+
+                # Create a domain-specific generator instance
+                gen_cfg = cfg.generators[name]
+                domain_gen = GENERATORS[name](
+                    gen_cfg, cfg.impairments,
+                    fs=domain.sample_rate,
+                    window_len=domain.window_length)
+                # Override signal_classes to domain subset
+                domain_gen.signal_classes = domain_classes
+
+                log.info("[%s] %s: %d classes",
+                         domain_name, name, len(domain_classes))
+                gen_results = domain_gen.run(domain_dir,
+                                             seed=cfg.dataset.seed)
+                if gen_results:
+                    all_results.update(gen_results)
     finally:
         signal.signal(signal.SIGINT, prev_sigint)
         signal.signal(signal.SIGTERM, prev_sigterm)
 
-    # Assemble
-    log.info("Assembling dataset...")
-    iq_data, tags = assemble_parts(output_dir)
-    if len(iq_data) == 0:
+    # Assemble — one dataset per domain
+    total_windows = 0
+    total_size_mb = 0.0
+    all_tags = []
+
+    for domain_name in enabled_domains:
+        domain = DOMAINS[domain_name]
+        domain_labels = labels_for_domain(domain_name)
+
+        if len(enabled_domains) > 1:
+            domain_dir = os.path.join(output_dir, domain_name)
+            prefix = f"rf_datagen_{domain_name}"
+        else:
+            domain_dir = output_dir
+            prefix = "rf_datagen"
+
+        log.info("Assembling %s dataset...", domain_name)
+        iq_data, tags = assemble_parts(
+            domain_dir,
+            window_len=domain.window_length,
+            labels=domain_labels)
+
+        if len(iq_data) == 0:
+            log.warning("No data generated for domain %s", domain_name)
+            continue
+
+        scenarios = [""] * len(tags)
+        parts_dir = os.path.join(domain_dir, "parts")
+        if os.path.exists(parts_dir):
+            import csv
+            for label in set(tags):
+                meta_path = os.path.join(parts_dir, f"{label}_meta.csv")
+                if os.path.exists(meta_path):
+                    with open(meta_path) as f:
+                        reader = csv.reader(f)
+                        next(reader, None)
+                        label_scenarios = [row[0] for row in reader if row]
+                    idx = 0
+                    for i, t in enumerate(tags):
+                        if t == label:
+                            if idx < len(label_scenarios):
+                                scenarios[i] = label_scenarios[idx]
+                            idx += 1
+
+        save_dataset(iq_data, tags, scenarios, domain_dir, prefix=prefix)
+
+        iq_path = os.path.join(domain_dir, f"{prefix}_iq.npy")
+        if os.path.exists(iq_path):
+            total_size_mb += os.path.getsize(iq_path) / (1024 * 1024)
+        total_windows += len(iq_data)
+        all_tags.extend(tags)
+
+    elapsed = time.time() - t_start
+
+    if total_windows == 0:
         log.error("No data generated")
         return 1
 
-    scenarios = [""] * len(tags)  # meta from parts CSVs if available
-    parts_dir = os.path.join(output_dir, "parts")
-    if os.path.exists(parts_dir):
-        import csv
-        for label in set(tags):
-            meta_path = os.path.join(parts_dir, f"{label}_meta.csv")
-            if os.path.exists(meta_path):
-                with open(meta_path) as f:
-                    reader = csv.reader(f)
-                    next(reader, None)  # skip header
-                    label_scenarios = [row[0] for row in reader if row]
-                # Map back into scenarios list
-                idx = 0
-                for i, t in enumerate(tags):
-                    if t == label:
-                        if idx < len(label_scenarios):
-                            scenarios[i] = label_scenarios[idx]
-                        idx += 1
-
-    save_dataset(iq_data, tags, scenarios, output_dir)
-
-    elapsed = time.time() - t_start
-    size_mb = os.path.getsize(
-        os.path.join(output_dir, "rf_datagen_iq.npy")) / (1024 * 1024)
-
-    log.info("Done in %.0fs — %d windows, %.0f MB", elapsed, len(iq_data),
-             size_mb)
+    log.info("Done in %.0fs — %d windows, %.0f MB", elapsed, total_windows,
+             total_size_mb)
 
     # Per-class summary
     from collections import Counter
-    counts = Counter(tags)
+    counts = Counter(all_tags)
     log.info("Per-class counts (%d classes):", len(counts))
     for label in SIGNAL_LABELS:
         if label in counts:
@@ -163,12 +223,13 @@ def cmd_generate(args):
 
     # Write generation report
     report = {
+        "domains": enabled_domains,
         "total_classes": total_classes,
         "generated": ok_count,
         "failed": len(failed),
-        "total_windows": len(iq_data),
+        "total_windows": total_windows,
         "elapsed_s": round(elapsed, 1),
-        "size_mb": round(size_mb, 1),
+        "size_mb": round(total_size_mb, 1),
         "per_class": all_results,
     }
     report_path = os.path.join(output_dir, "generation_report.json")
@@ -418,6 +479,8 @@ def main():
                        help="Output directory (overrides config)")
     p_gen.add_argument("--seed", "-s", type=int, default=None,
                        help="Random seed (overrides config)")
+    p_gen.add_argument("--domains", "-d", default=None,
+                       help="Comma-separated domain names: narrowband,moderate,wideband")
     p_gen.add_argument("--verbose", "-v", action="store_true",
                        help="Enable verbose (DEBUG) console output")
     p_gen.add_argument("--quiet", "-q", action="store_true",

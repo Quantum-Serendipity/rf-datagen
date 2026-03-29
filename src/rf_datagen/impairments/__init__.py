@@ -11,6 +11,8 @@ from .effects import (
     apply_impulse_noise, apply_adjacent_signal,
     apply_powerline_hum, apply_narrowband_birdie,
     apply_time_mask, apply_freq_mask,
+    apply_doppler_rate, apply_tapped_delay_line,
+    apply_clutter, apply_ism_interference,
     extract_windows,
 )
 from .transmitter import TransmitterModel
@@ -25,6 +27,8 @@ __all__ = [
     "apply_watterson", "apply_watterson_sdc",
     "apply_rayleigh", "apply_rician",
     "apply_qsb", "apply_atmospheric_noise",
+    "apply_doppler_rate", "apply_tapped_delay_line",
+    "apply_clutter", "apply_ism_interference",
     "apply_scenario", "apply_scenario_continuous", "apply_impairments",
     "configure_impairments",
     "extract_windows", "TransmitterModel",
