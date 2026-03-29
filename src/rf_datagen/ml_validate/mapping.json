@@ -1,0 +1,542 @@
+{
+  "CW": {
+    "torchsig": "ook",
+    "radioml": null,
+    "panoradio": "CW",
+    "torchsig_wideband": null
+  },
+  "PSK31": {
+    "torchsig": "bpsk",
+    "radioml": "BPSK",
+    "panoradio": "PSK31",
+    "torchsig_wideband": null
+  },
+  "PSK63": {
+    "torchsig": "bpsk",
+    "radioml": "BPSK",
+    "panoradio": "PSK63",
+    "torchsig_wideband": null
+  },
+  "RTTY": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "RTTY",
+    "torchsig_wideband": null
+  },
+  "OLIVIA": {
+    "torchsig": "ofdm-64",
+    "radioml": null,
+    "panoradio": "OLIVIA",
+    "torchsig_wideband": null
+  },
+  "JS8": {
+    "torchsig": "8gfsk",
+    "radioml": "GFSK",
+    "panoradio": "JS8",
+    "torchsig_wideband": null
+  },
+  "FT8": {
+    "torchsig": "8gfsk",
+    "radioml": "GFSK",
+    "panoradio": "FT8",
+    "torchsig_wideband": null
+  },
+  "FT4": {
+    "torchsig": "4gfsk",
+    "radioml": "GFSK",
+    "panoradio": "FT4",
+    "torchsig_wideband": null
+  },
+  "WSPR": {
+    "torchsig": "4fsk",
+    "radioml": "CPFSK",
+    "panoradio": "WSPR",
+    "torchsig_wideband": null
+  },
+  "JT65": {
+    "torchsig": "ofdm-64",
+    "radioml": null,
+    "panoradio": "JT65",
+    "torchsig_wideband": null
+  },
+  "JT9": {
+    "torchsig": "8gfsk",
+    "radioml": "GFSK",
+    "panoradio": "JT9",
+    "torchsig_wideband": null
+  },
+  "SSB": {
+    "torchsig": "am-ssb-sc",
+    "radioml": "AM-SSB",
+    "panoradio": "SSB",
+    "torchsig_wideband": null
+  },
+  "AM": {
+    "torchsig": "am-dsb-wc",
+    "radioml": "AM-DSB",
+    "panoradio": "AM",
+    "torchsig_wideband": null
+  },
+  "FM": {
+    "torchsig": "fm",
+    "radioml": "WBFM",
+    "panoradio": "FM",
+    "torchsig_wideband": null
+  },
+  "SSTV": {
+    "torchsig": "fm",
+    "radioml": "WBFM",
+    "panoradio": "SSTV",
+    "torchsig_wideband": null
+  },
+  "FAX": {
+    "torchsig": "fm",
+    "radioml": "WBFM",
+    "panoradio": "FAX",
+    "torchsig_wideband": null
+  },
+  "NAVTEX": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "NAVTEX",
+    "torchsig_wideband": null
+  },
+  "NOISE": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "NOISE",
+    "torchsig_wideband": null
+  },
+  "DOMINOEX": {
+    "torchsig": "ofdm-64",
+    "radioml": null,
+    "panoradio": "DOMINOEX",
+    "torchsig_wideband": null
+  },
+  "MT63": {
+    "torchsig": "ofdm-64",
+    "radioml": null,
+    "panoradio": "MT63",
+    "torchsig_wideband": null
+  },
+  "HELLSCHREIBER": {
+    "torchsig": "ook",
+    "radioml": null,
+    "panoradio": "HELLSCHREIBER",
+    "torchsig_wideband": null
+  },
+  "MFSK16": {
+    "torchsig": "16fsk",
+    "radioml": null,
+    "panoradio": "MFSK16",
+    "torchsig_wideband": null
+  },
+  "MFSK32": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "MFSK32",
+    "torchsig_wideband": null
+  },
+  "CONTESTIA": {
+    "torchsig": "ofdm-64",
+    "radioml": null,
+    "panoradio": "CONTESTIA",
+    "torchsig_wideband": null
+  },
+  "THOR": {
+    "torchsig": "ofdm-64",
+    "radioml": null,
+    "panoradio": "THOR",
+    "torchsig_wideband": null
+  },
+  "PACKET": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "PACKET",
+    "torchsig_wideband": null
+  },
+  "QPSK": {
+    "torchsig": "qpsk",
+    "radioml": "QPSK",
+    "panoradio": "QPSK",
+    "torchsig_wideband": null
+  },
+  "PSK125": {
+    "torchsig": "bpsk",
+    "radioml": "BPSK",
+    "panoradio": "PSK125",
+    "torchsig_wideband": null
+  },
+  "8PSK": {
+    "torchsig": "8psk",
+    "radioml": "8PSK",
+    "panoradio": "8PSK",
+    "torchsig_wideband": null
+  },
+  "FSQ": {
+    "torchsig": "ofdm-64",
+    "radioml": null,
+    "panoradio": "FSQ",
+    "torchsig_wideband": null
+  },
+  "IFKP": {
+    "torchsig": "ofdm-64",
+    "radioml": null,
+    "panoradio": "IFKP",
+    "torchsig_wideband": null
+  },
+  "THROB": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "THROB",
+    "torchsig_wideband": null
+  },
+  "FREEDV": {
+    "torchsig": "ofdm-64",
+    "radioml": null,
+    "panoradio": "FREEDV",
+    "torchsig_wideband": null
+  },
+  "M17": {
+    "torchsig": "4fsk",
+    "radioml": "CPFSK",
+    "panoradio": "M17",
+    "torchsig_wideband": null
+  },
+  "DMR": {
+    "torchsig": "4fsk",
+    "radioml": "CPFSK",
+    "panoradio": "DMR",
+    "torchsig_wideband": null
+  },
+  "DSTAR": {
+    "torchsig": "2gmsk",
+    "radioml": "GFSK",
+    "panoradio": "DSTAR",
+    "torchsig_wideband": null
+  },
+  "YSF": {
+    "torchsig": "4fsk",
+    "radioml": "CPFSK",
+    "panoradio": "YSF",
+    "torchsig_wideband": null
+  },
+  "P25": {
+    "torchsig": "4fsk",
+    "radioml": "CPFSK",
+    "panoradio": "P25",
+    "torchsig_wideband": null
+  },
+  "NXDN": {
+    "torchsig": "4fsk",
+    "radioml": "CPFSK",
+    "panoradio": "NXDN",
+    "torchsig_wideband": null
+  },
+  "MSK144": {
+    "torchsig": "2msk",
+    "radioml": null,
+    "panoradio": "MSK144",
+    "torchsig_wideband": null
+  },
+  "EAS": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "EAS",
+    "torchsig_wideband": null
+  },
+  "ARDOP": {
+    "torchsig": "ofdm-64",
+    "radioml": null,
+    "panoradio": "ARDOP",
+    "torchsig_wideband": null
+  },
+  "BELL103": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "BELL103",
+    "torchsig_wideband": null
+  },
+  "BELL202": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "BELL202",
+    "torchsig_wideband": null
+  },
+  "ATV": {
+    "torchsig": "am-dsb-wc",
+    "radioml": "AM-DSB",
+    "panoradio": "ATV",
+    "torchsig_wideband": null
+  },
+  "LORA": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "LORA",
+    "torchsig_wideband": null
+  },
+  "POCSAG": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "POCSAG",
+    "torchsig_wideband": null
+  },
+  "FLEX": {
+    "torchsig": "4fsk",
+    "radioml": "CPFSK",
+    "panoradio": "FLEX",
+    "torchsig_wideband": null
+  },
+  "HDRADIO": {
+    "torchsig": "ofdm-256",
+    "radioml": null,
+    "panoradio": "HDRADIO",
+    "torchsig_wideband": null
+  },
+  "DTMF": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "DTMF",
+    "torchsig_wideband": null
+  },
+  "DRM": {
+    "torchsig": "ofdm-256",
+    "radioml": null,
+    "panoradio": "DRM",
+    "torchsig_wideband": null
+  },
+  "WWVB": {
+    "torchsig": "ook",
+    "radioml": null,
+    "panoradio": "WWVB",
+    "torchsig_wideband": null
+  },
+  "DCF77": {
+    "torchsig": "ook",
+    "radioml": null,
+    "panoradio": "DCF77",
+    "torchsig_wideband": null
+  },
+  "NDB": {
+    "torchsig": "ook",
+    "radioml": null,
+    "panoradio": "NDB",
+    "torchsig_wideband": null
+  },
+  "ACARS": {
+    "torchsig": "2msk",
+    "radioml": null,
+    "panoradio": "ACARS",
+    "torchsig_wideband": null
+  },
+  "SELCAL": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "SELCAL",
+    "torchsig_wideband": null
+  },
+  "ATIS": {
+    "torchsig": "am-dsb-wc",
+    "radioml": "AM-DSB",
+    "panoradio": "ATIS",
+    "torchsig_wideband": null
+  },
+  "AIS": {
+    "torchsig": "2gmsk",
+    "radioml": "GFSK",
+    "panoradio": "AIS",
+    "torchsig_wideband": null
+  },
+  "SIGFOX": {
+    "torchsig": "bpsk",
+    "radioml": "BPSK",
+    "panoradio": "SIGFOX",
+    "torchsig_wideband": null
+  },
+  "TPMS": {
+    "torchsig": "ook",
+    "radioml": null,
+    "panoradio": "TPMS",
+    "torchsig_wideband": null
+  },
+  "SCADA_TELEMETRY": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "SCADA_TELEMETRY",
+    "torchsig_wideband": null
+  },
+  "TETRA": {
+    "torchsig": "pi4dqpsk",
+    "radioml": null,
+    "panoradio": "TETRA",
+    "torchsig_wideband": null
+  },
+  "SPOT_JAMMER": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "SPOT_JAMMER",
+    "torchsig_wideband": null
+  },
+  "SWEEP_JAMMER": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "SWEEP_JAMMER",
+    "torchsig_wideband": null
+  },
+  "NOISE_JAMMER": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "NOISE_JAMMER",
+    "torchsig_wideband": null
+  },
+  "BARRAGE_JAMMER": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "BARRAGE_JAMMER",
+    "torchsig_wideband": null
+  },
+  "PULSE_RADAR": {
+    "torchsig": "ook",
+    "radioml": null,
+    "panoradio": "PULSE_RADAR",
+    "torchsig_wideband": null
+  },
+  "BARKER_RADAR": {
+    "torchsig": "bpsk",
+    "radioml": "BPSK",
+    "panoradio": "BARKER_RADAR",
+    "torchsig_wideband": null
+  },
+  "BLE": {
+    "torchsig": "2gfsk",
+    "radioml": "GFSK",
+    "panoradio": "BLE",
+    "torchsig_wideband": null
+  },
+  "ZWAVE": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "ZWAVE",
+    "torchsig_wideband": null
+  },
+  "ADS_B": {
+    "torchsig": "ook",
+    "radioml": null,
+    "panoradio": "ADS_B",
+    "torchsig_wideband": null
+  },
+  "GSM_BURST": {
+    "torchsig": "2gmsk",
+    "radioml": "GFSK",
+    "panoradio": "GSM_BURST",
+    "torchsig_wideband": null
+  },
+  "LFM_RADAR": {
+    "torchsig": "fm",
+    "radioml": null,
+    "panoradio": "LFM_RADAR",
+    "torchsig_wideband": null
+  },
+  "FMCW_RADAR": {
+    "torchsig": "fm",
+    "radioml": null,
+    "panoradio": "FMCW_RADAR",
+    "torchsig_wideband": null
+  },
+  "PHASE_CODED_RADAR": {
+    "torchsig": "bpsk",
+    "radioml": "BPSK",
+    "panoradio": "PHASE_CODED_RADAR",
+    "torchsig_wideband": null
+  },
+  "NOAA_APT": {
+    "torchsig": "fm",
+    "radioml": "WBFM",
+    "panoradio": "NOAA_APT",
+    "torchsig_wideband": null
+  },
+  "COSPAS_SARSAT": {
+    "torchsig": "2fsk",
+    "radioml": "CPFSK",
+    "panoradio": "COSPAS_SARSAT",
+    "torchsig_wideband": null
+  },
+  "LORA_WIDE": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "LORA_WIDE",
+    "torchsig_wideband": null
+  },
+  "VDL2": {
+    "torchsig": "8psk",
+    "radioml": "8PSK",
+    "panoradio": "VDL2",
+    "torchsig_wideband": null
+  },
+  "DRM_WIDE": {
+    "torchsig": "ofdm-256",
+    "radioml": null,
+    "panoradio": "DRM_WIDE",
+    "torchsig_wideband": null
+  },
+  "DECT": {
+    "torchsig": "2gfsk",
+    "radioml": "GFSK",
+    "panoradio": "DECT",
+    "torchsig_wideband": null
+  },
+  "IRIDIUM": {
+    "torchsig": "qpsk",
+    "radioml": "QPSK",
+    "panoradio": "IRIDIUM",
+    "torchsig_wideband": null
+  },
+  "WIFI_PREAMBLE": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "WIFI_PREAMBLE",
+    "torchsig_wideband": "ofdm-64"
+  },
+  "LTE_FRAME": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "LTE_FRAME",
+    "torchsig_wideband": "ofdm-2048"
+  },
+  "FIVEG_NR": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "FIVEG_NR",
+    "torchsig_wideband": "ofdm-256"
+  },
+  "GPS_L1": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "GPS_L1",
+    "torchsig_wideband": null
+  },
+  "ZIGBEE": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "ZIGBEE",
+    "torchsig_wideband": null
+  },
+  "DAB": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "DAB",
+    "torchsig_wideband": "ofdm-2048"
+  },
+  "DVB_T": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "DVB_T",
+    "torchsig_wideband": "ofdm-2048"
+  },
+  "LORAN_C_WIDE": {
+    "torchsig": null,
+    "radioml": null,
+    "panoradio": "LORAN_C_WIDE",
+    "torchsig_wideband": null
+  }
+}

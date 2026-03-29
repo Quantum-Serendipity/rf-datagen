@@ -20,6 +20,9 @@ qc = ["matplotlib>=3.6"]
 gnuradio = ["gnuradio>=3.10"]
 sdc = ["scikit-dsp-comm>=2.0"]
 accel = ["sdr>=0.0.10"]
+ml-validate = ["torch>=2.0", "torchsig>=0.4", "onnxruntime>=1.15"]
+ml-validate-keras = ["tensorflow-cpu>=2.13"]
+ml-validate-rfml = ["rfml>=1.0"]
 
 [project.scripts]
 rf-datagen = "rf_datagen.cli:main"

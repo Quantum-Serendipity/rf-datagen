@@ -359,6 +359,25 @@ def cmd_validate_roundtrip(args):
     return 0 if all_pass else 1
 
 
+def cmd_validate_ml(args):
+    """ML-based classification validation."""
+    from .ml_validate import run_ml_validation
+
+    results = run_ml_validation(
+        model=args.model,
+        modes=args.modes,
+        samples=args.samples,
+        snr_sweep=args.snr_sweep,
+        snr_levels=args.snr_levels,
+        output=args.output or "./output/ml_validation",
+        device=args.device,
+        threshold=args.threshold,
+    )
+    if "error" in results:
+        return 1
+    return 0
+
+
 def cmd_qc(args):
     """Dispatch to QC inspection subcommands."""
     from . import qc
@@ -511,6 +530,28 @@ def main():
     p_vrt.add_argument("--seed", "-s", type=int, default=None,
                        help="Random seed")
 
+    # validate-ml
+    p_vml = sub.add_parser("validate-ml",
+                           help="ML-based classification validation")
+    p_vml.add_argument("--model", default="torchsig",
+                       choices=["torchsig", "rfml", "cgdnn", "all"],
+                       help="Model backend (default: torchsig)")
+    p_vml.add_argument("--modes", nargs="*", default=None,
+                       help="Signal modes to validate (default: all mapped)")
+    p_vml.add_argument("--samples", type=int, default=50,
+                       help="IQ samples per mode (default: 50)")
+    p_vml.add_argument("--snr-sweep", action="store_true",
+                       help="Run across multiple SNR levels")
+    p_vml.add_argument("--snr-levels", nargs="*", type=int, default=None,
+                       help="SNR levels for sweep (default: -10 0 10 20)")
+    p_vml.add_argument("--output", "-o", default=None,
+                       help="Output directory for results")
+    p_vml.add_argument("--device", default="cpu",
+                       choices=["cpu", "openvino"],
+                       help="Inference device (default: cpu)")
+    p_vml.add_argument("--threshold", type=float, default=0.5,
+                       help="Min accuracy to pass (default: 0.5)")
+
     # inspect
     p_ins = sub.add_parser("inspect",
                            help="Plot spectrogram/stats for a class from dataset")
@@ -631,6 +672,7 @@ def main():
         "list": cmd_list,
         "validate": cmd_validate,
         "validate-roundtrip": cmd_validate_roundtrip,
+        "validate-ml": cmd_validate_ml,
         "inspect": cmd_inspect,
         "qc": cmd_qc,
     }
