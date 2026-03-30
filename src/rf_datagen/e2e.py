@@ -205,6 +205,11 @@ class E2EPipeline:
         """
         import tempfile
 
+        # Prevent audio leaks: block PulseAudio from reaching real speakers.
+        # Validators that need audio use IsolatedPulseServer internally;
+        # this is a safety net for any that don't.
+        os.environ.setdefault("PULSE_SERVER", "/dev/null")
+
         per_mode = {}
 
         # Only narrowband has round-trip validators

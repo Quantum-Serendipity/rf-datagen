@@ -176,10 +176,24 @@ def _check_domain(iq, tags_rows, tags_header, domain_name, domain,
     counts = Counter(labels_in_csv)
 
     if config is not None:
-        # Derive target from max generator samples_per_class in config
-        # (different generators may contribute different counts)
-        gen_targets = [g.samples_per_class for g in config.generators.values()
-                       if g.enabled]
+        # Find generators whose classes overlap with this domain
+        from .generators import GENERATORS
+        domain_labels_set = set(expected_labels)
+        gen_targets = []
+        for gname, gcfg in config.generators.items():
+            if not gcfg.enabled:
+                continue
+            gen_cls = GENERATORS.get(gname)
+            if gen_cls is None:
+                continue
+            # Instantiate briefly to get signal_classes
+            try:
+                gen = gen_cls(gcfg, config.impairments)
+                gen_classes = set(gen.signal_classes)
+                if gen_classes & domain_labels_set:
+                    gen_targets.append(gcfg.samples_per_class)
+            except Exception:
+                gen_targets.append(gcfg.samples_per_class)
         target = max(gen_targets) if gen_targets else domain.default_samples_per_class
         tolerance = 0.10  # ±10%
         bad_counts = {}
