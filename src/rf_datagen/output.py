@@ -99,12 +99,47 @@ def write_csv(tags, scenarios, output_path):
     atomic_write_csv(output_path, header, rows)
 
 
+def _validate_checkpoint(windows, label, source, window_len):
+    """Validate a loaded checkpoint array. Returns True if valid."""
+    if len(windows) == 0:
+        return False
+    if windows.ndim != 2 or windows.shape[1] != window_len:
+        log.warning("Skipping %s/%s — wrong shape %s (expected (N, %d))",
+                    source, label, windows.shape, window_len)
+        return False
+    if not np.iscomplexobj(windows):
+        log.warning("Skipping %s/%s — expected complex dtype, got %s",
+                    source, label, windows.dtype)
+        return False
+    check_slice = windows[:min(100, len(windows))]
+    if np.any(np.isnan(check_slice)) or np.any(np.isinf(check_slice)):
+        log.warning("Skipping %s/%s — contains NaN or Inf values",
+                    source, label)
+        return False
+    return True
+
+
+def _load_meta_scenarios(meta_path):
+    """Load scenario strings from a _meta.csv sidecar file."""
+    import csv as _csv
+    if not os.path.exists(meta_path):
+        return []
+    try:
+        with open(meta_path) as f:
+            reader = _csv.reader(f)
+            next(reader, None)  # skip header
+            return [row[0] for row in reader if row]
+    except Exception:
+        return []
+
+
 def assemble_parts(output_dir, generator_name=None, window_len=None,
                     labels=None):
     """Assemble per-class .npy checkpoints into a single dataset.
 
-    Validates each checkpoint on load: correct shape, complex dtype, no
-    NaN/Inf.  Skips invalid checkpoints with a warning.
+    Discovers generator subdirectories under parts/ and concatenates
+    data from all generators per class. Also loads scenario metadata
+    from _meta.csv sidecar files.
 
     Args:
         output_dir: Directory containing parts/ subdirectory.
@@ -112,9 +147,10 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
         window_len: Expected window length. If None, uses WINDOW_LEN.
         labels: Ordered list of labels to include. If None, uses SIGNAL_LABELS.
 
-    Returns (iq_data, tags) where:
+    Returns (iq_data, tags, scenarios) where:
         iq_data: complex array of shape [N, window_len]
         tags: list of class name strings, length N
+        scenarios: list of scenario name strings, length N
     """
     if window_len is None:
         from .constants import WINDOW_LEN
@@ -124,45 +160,93 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
 
     parts_dir = os.path.join(output_dir, "parts")
     if not os.path.exists(parts_dir):
-        return np.array([]), []
+        return np.array([]), [], []
+
+    # Discover generator subdirectories
+    gen_dirs = sorted(
+        d for d in os.listdir(parts_dir)
+        if os.path.isdir(os.path.join(parts_dir, d))
+    )
+
+    # Check for legacy flat files (backward compat)
+    has_flat = any(
+        os.path.exists(os.path.join(parts_dir, f"{label}.npy"))
+        for label in labels
+    )
+    if has_flat:
+        log.warning("Found flat parts/*.npy files (legacy layout). "
+                     "Re-run generation to use parts/{generator}/ layout.")
 
     all_windows = []
     all_tags = []
+    all_scenarios = []
 
     for label in labels:
-        path = os.path.join(parts_dir, f"{label}.npy")
-        if not os.path.exists(path):
+        label_windows = []
+        label_scenarios = []
+        contributions = {}
+
+        # Load from generator subdirectories
+        for gen_name in gen_dirs:
+            npy_path = os.path.join(parts_dir, gen_name, f"{label}.npy")
+            if not os.path.exists(npy_path):
+                continue
+            try:
+                windows = np.load(npy_path)
+            except Exception as e:
+                log.warning("Skipping %s/%s — failed to load: %s",
+                            gen_name, label, e)
+                continue
+            if not _validate_checkpoint(windows, label, gen_name, window_len):
+                continue
+            label_windows.append(windows)
+            contributions[gen_name] = len(windows)
+
+            meta_path = os.path.join(parts_dir, gen_name, f"{label}_meta.csv")
+            scenarios = _load_meta_scenarios(meta_path)
+            if len(scenarios) == len(windows):
+                label_scenarios.extend(scenarios)
+            else:
+                label_scenarios.extend([""] * len(windows))
+
+        # Legacy flat files fallback
+        if has_flat:
+            flat_path = os.path.join(parts_dir, f"{label}.npy")
+            if os.path.exists(flat_path):
+                try:
+                    windows = np.load(flat_path)
+                except Exception:
+                    windows = None
+                if windows is not None and _validate_checkpoint(
+                        windows, label, "flat", window_len):
+                    label_windows.append(windows)
+                    contributions["flat"] = len(windows)
+                    flat_meta = os.path.join(parts_dir, f"{label}_meta.csv")
+                    scenarios = _load_meta_scenarios(flat_meta)
+                    if len(scenarios) == len(windows):
+                        label_scenarios.extend(scenarios)
+                    else:
+                        label_scenarios.extend([""] * len(windows))
+
+        if not label_windows:
             continue
-        try:
-            windows = np.load(path)
-        except Exception as e:
-            log.warning("Skipping %s — failed to load: %s", label, e)
-            continue
-        if len(windows) == 0:
-            continue
-        # Shape validation
-        if windows.ndim != 2 or windows.shape[1] != window_len:
-            log.warning("Skipping %s — wrong shape %s (expected (N, %d))",
-                        label, windows.shape, window_len)
-            continue
-        # Dtype validation
-        if not np.iscomplexobj(windows):
-            log.warning("Skipping %s — expected complex dtype, got %s",
-                        label, windows.dtype)
-            continue
-        # NaN/Inf check (sample first 100 rows for speed)
-        check_slice = windows[:min(100, len(windows))]
-        if np.any(np.isnan(check_slice)) or np.any(np.isinf(check_slice)):
-            log.warning("Skipping %s — contains NaN or Inf values", label)
-            continue
-        all_windows.append(windows)
-        all_tags.extend([label] * len(windows))
+
+        total = sum(contributions.values())
+        if len(contributions) > 1:
+            detail = ", ".join(f"{g}={n}" for g, n in
+                               sorted(contributions.items()))
+            log.info("%15s: %s -> %d total", label, detail, total)
+
+        combined = np.concatenate(label_windows, axis=0)
+        all_windows.append(combined)
+        all_tags.extend([label] * len(combined))
+        all_scenarios.extend(label_scenarios)
 
     if not all_windows:
-        return np.array([]), []
+        return np.array([]), [], []
 
     iq_data = np.concatenate(all_windows, axis=0)
-    return iq_data, all_tags
+    return iq_data, all_tags, all_scenarios
 
 
 def save_dataset(iq_data, tags, scenarios, output_dir, prefix="rf_datagen",

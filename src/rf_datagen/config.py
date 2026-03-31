@@ -160,7 +160,8 @@ def checkpoint_config_hash(gen_cfg: "GeneratorConfig",
                            class_name: str,
                            n_samples: int,
                            fs: int = FS,
-                           window_len: int = WINDOW_LEN) -> str:
+                           window_len: int = WINDOW_LEN,
+                           generator_name: str = "") -> str:
     """Compute a short hash of parameters that affect checkpoint contents.
 
     If any of these change, cached checkpoints are stale and must be
@@ -172,6 +173,7 @@ def checkpoint_config_hash(gen_cfg: "GeneratorConfig",
         "fs": fs,
         "window_len": window_len,
         "generator": gen_cfg._hash_dict(),
+        "generator_name": generator_name,
         "impairments": imp_cfg._hash_dict(),
     }
     raw = json.dumps(blob, sort_keys=True, separators=(",", ":"))

@@ -364,7 +364,7 @@ class TestAssembleParts:
         label = SIGNAL_LABELS[0]
         arr = np.ones((10, WINDOW_LEN), dtype=np.complex128)
         np.save(os.path.join(parts_dir, f"{label}.npy"), arr)
-        iq, tags = assemble_parts(tmp)
+        iq, tags, scenarios = assemble_parts(tmp)
         assert iq.shape == (10, WINDOW_LEN)
         assert tags == [label] * 10
 
@@ -376,7 +376,7 @@ class TestAssembleParts:
         arr = np.ones((10, 512), dtype=np.complex128)  # wrong width
         np.save(os.path.join(parts_dir, f"{label}.npy"), arr)
         with caplog.at_level("WARNING", logger="rf_datagen.output"):
-            iq, tags = assemble_parts(tmp)
+            iq, tags, _ = assemble_parts(tmp)
         assert len(iq) == 0
         assert "wrong shape" in caplog.text
 
@@ -388,7 +388,7 @@ class TestAssembleParts:
         arr = np.ones((10, WINDOW_LEN), dtype=np.float64)  # not complex
         np.save(os.path.join(parts_dir, f"{label}.npy"), arr)
         with caplog.at_level("WARNING", logger="rf_datagen.output"):
-            iq, tags = assemble_parts(tmp)
+            iq, tags, _ = assemble_parts(tmp)
         assert len(iq) == 0
         assert "complex dtype" in caplog.text
 
@@ -401,12 +401,12 @@ class TestAssembleParts:
         arr[0, 0] = np.nan
         np.save(os.path.join(parts_dir, f"{label}.npy"), arr)
         with caplog.at_level("WARNING", logger="rf_datagen.output"):
-            iq, tags = assemble_parts(tmp)
+            iq, tags, _ = assemble_parts(tmp)
         assert len(iq) == 0
         assert "NaN" in caplog.text
 
     def test_empty_parts_dir(self, tmp):
-        iq, tags = assemble_parts(tmp)
+        iq, tags, scenarios = assemble_parts(tmp)
         assert len(iq) == 0
         assert tags == []
 

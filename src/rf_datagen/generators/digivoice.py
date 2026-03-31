@@ -175,7 +175,7 @@ class DigivoiceGenerator(BaseGenerator):
     def run(self, output_dir, seed=42):
         configure_impairments(self.impairment_config)
 
-        parts_dir = os.path.join(output_dir, "parts")
+        parts_dir = os.path.join(output_dir, "parts", self.name)
         os.makedirs(parts_dir, exist_ok=True)
 
         classes = self._resolve_classes()

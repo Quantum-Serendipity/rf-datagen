@@ -1,4 +1,4 @@
-.PHONY: generate generate-moderate generate-wideband generate-all list validate clean
+.PHONY: generate generate-moderate generate-wideband generate-all list validate clean cleanup-orphans
 .PHONY: e2e e2e-quick e2e-validate e2e-ml
 .PHONY: validate-roundtrip validate-all validate-quick
 .PHONY: validate-wsjtx validate-packet validate-freedv validate-digivoice
@@ -168,6 +168,9 @@ qc-text:
 # ---------------------------------------------------------------------------
 # Housekeeping
 # ---------------------------------------------------------------------------
+
+cleanup-orphans:
+	python -m rf_datagen.cli cleanup
 
 clean:
 	rm -rf output/parts output/validation

@@ -17,6 +17,7 @@ from .generators import GENERATORS
 from . import _state
 from .logging_config import setup_logging, get_logger
 from .output import assemble_parts, save_dataset, atomic_write_json
+from . import pid_registry
 
 log = get_logger("cli")
 
@@ -75,6 +76,15 @@ def cmd_generate(args):
     if not plan:
         log.error("No generators to run")
         return 1
+
+    # Clean up orphans from any previous crashed run
+    try:
+        if not pid_registry.cleanup_stale():
+            log.error("Aborting — another generation is running")
+            return 1
+        pid_registry.init_registry()
+    except Exception as e:
+        log.debug("PID registry init failed (non-fatal): %s", e)
 
     total_classes = sum(len(g.signal_classes) for _, g in plan)
     gen_list = ", ".join(n for n, _ in plan)
@@ -142,6 +152,10 @@ def cmd_generate(args):
     finally:
         signal.signal(signal.SIGINT, prev_sigint)
         signal.signal(signal.SIGTERM, prev_sigterm)
+        try:
+            pid_registry.remove_registry()
+        except Exception:
+            pass
 
     # Assemble — one dataset per domain
     total_windows = 0
@@ -160,7 +174,7 @@ def cmd_generate(args):
             prefix = "rf_datagen"
 
         log.info("Assembling %s dataset...", domain_name)
-        iq_data, tags = assemble_parts(
+        iq_data, tags, scenarios = assemble_parts(
             domain_dir,
             window_len=domain.window_length,
             labels=domain_labels)
@@ -168,24 +182,6 @@ def cmd_generate(args):
         if len(iq_data) == 0:
             log.warning("No data generated for domain %s", domain_name)
             continue
-
-        scenarios = [""] * len(tags)
-        parts_dir = os.path.join(domain_dir, "parts")
-        if os.path.exists(parts_dir):
-            import csv
-            for label in set(tags):
-                meta_path = os.path.join(parts_dir, f"{label}_meta.csv")
-                if os.path.exists(meta_path):
-                    with open(meta_path) as f:
-                        reader = csv.reader(f)
-                        next(reader, None)
-                        label_scenarios = [row[0] for row in reader if row]
-                    idx = 0
-                    for i, t in enumerate(tags):
-                        if t == label:
-                            if idx < len(label_scenarios):
-                                scenarios[i] = label_scenarios[idx]
-                            idx += 1
 
         save_dataset(iq_data, tags, scenarios, domain_dir, prefix=prefix)
 
@@ -405,6 +401,16 @@ def cmd_qc(args):
     return dispatch[args.qc_command](args)
 
 
+def cmd_cleanup(args):
+    """Clean up orphaned processes from a crashed generation run."""
+    setup_logging(verbose=args.verbose, quiet=False)
+    cleaned = pid_registry.cleanup_stale(force=args.force)
+    if cleaned:
+        log.info("Cleanup complete")
+        return 0
+    return 1
+
+
 def cmd_inspect(args):
     """Show spectrogram/stats for a class (requires matplotlib)."""
     try:
@@ -513,6 +519,14 @@ def main():
 
     # list
     sub.add_parser("list", help="List all signal classes and their generators")
+
+    # cleanup
+    p_clean = sub.add_parser("cleanup",
+                              help="Kill orphaned processes from a crashed run")
+    p_clean.add_argument("--force", action="store_true",
+                          help="Force cleanup even if parent appears alive")
+    p_clean.add_argument("--verbose", "-v", action="store_true",
+                          help="Enable verbose output")
 
     # validate
     p_val = sub.add_parser("validate", help="Validate dataset integrity")
@@ -706,6 +720,7 @@ def main():
     commands = {
         "generate": cmd_generate,
         "list": cmd_list,
+        "cleanup": cmd_cleanup,
         "validate": cmd_validate,
         "validate-roundtrip": cmd_validate_roundtrip,
         "validate-ml": cmd_validate_ml,

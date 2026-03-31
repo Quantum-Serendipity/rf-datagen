@@ -18,6 +18,7 @@ from ..impairments import extract_windows, apply_impairments, configure_impairme
 from ..isolation import IsolatedPulseServer
 from ..logging_config import get_logger
 from ..output import atomic_save_npy, atomic_write_csv
+from .. import pid_registry
 from .base import BaseGenerator
 
 log = get_logger("fldigi")
@@ -307,7 +308,7 @@ class FldigiGenerator(BaseGenerator):
 
         configure_impairments(self.impairment_config)
 
-        parts_dir = os.path.join(output_dir, "parts")
+        parts_dir = os.path.join(output_dir, "parts", self.name)
         os.makedirs(parts_dir, exist_ok=True)
 
         classes = self._resolve_classes()
@@ -332,6 +333,13 @@ class FldigiGenerator(BaseGenerator):
                     inst = FLDigiInstance(i, port + i, tmpdir, pa_env)
                     inst.start()
                     instances.append(inst)
+                    try:
+                        if inst.fldigi_proc:
+                            pid_registry.register_child(
+                                inst.fldigi_proc.pid, "fldigi",
+                                port=port + i, config_dir=inst.config_dir)
+                    except Exception:
+                        pass
 
                 mode_groups = [[] for _ in range(n_workers)]
                 for i, mode in enumerate(classes):
@@ -399,6 +407,11 @@ class FldigiGenerator(BaseGenerator):
 
         finally:
             for inst in instances:
+                try:
+                    if inst.fldigi_proc:
+                        pid_registry.unregister_child(inst.fldigi_proc.pid)
+                except Exception:
+                    pass
                 inst.stop()
             shutil.rmtree(tmpdir, ignore_errors=True)
 

@@ -121,7 +121,7 @@ class BaseGenerator(ABC):
         """
         configure_impairments(self.impairment_config)
 
-        parts_dir = os.path.join(output_dir, "parts")
+        parts_dir = os.path.join(output_dir, "parts", self.name)
         os.makedirs(parts_dir, exist_ok=True)
 
         classes = self._resolve_classes()
@@ -215,7 +215,8 @@ class BaseGenerator(ABC):
         """Compute a config hash for checkpoint staleness detection."""
         return checkpoint_config_hash(
             self.config, self.impairment_config,
-            class_name, n_samples, self.fs, self.window_len)
+            class_name, n_samples, self.fs, self.window_len,
+            generator_name=self.name)
 
     @staticmethod
     def _check_checkpoint(npy_path, meta_path, hash_path,

@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 import time
 
+from . import pid_registry
+
 
 class IsolatedPulseServer:
     """Context manager that runs a completely isolated PulseAudio daemon.
@@ -66,10 +68,20 @@ class IsolatedPulseServer:
             self._proc.kill()
             raise RuntimeError("Isolated PulseAudio socket not created")
 
+        try:
+            pid_registry.register_child(
+                self._proc.pid, "pulseaudio", tmpdir=self._tmpdir)
+        except Exception:
+            pass
+
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._proc and self._proc.poll() is None:
+            try:
+                pid_registry.unregister_child(self._proc.pid)
+            except Exception:
+                pass
             self._proc.terminate()
             try:
                 self._proc.wait(timeout=5)

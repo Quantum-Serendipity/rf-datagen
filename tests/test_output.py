@@ -1,11 +1,13 @@
 """Tests for rf_datagen.output — save_dataset with train/val/test split."""
 
+import csv
 import os
 
 import numpy as np
 import pytest
 
-from rf_datagen.output import save_dataset, atomic_save_npy
+from rf_datagen.output import (save_dataset, atomic_save_npy,
+                                assemble_parts, atomic_write_csv)
 
 
 def _make_dataset(n_per_class=20, n_classes=3, window_len=64):
@@ -86,3 +88,78 @@ def test_save_dataset_split_deterministic(tmp_path):
         d1 = np.load(r1[split][0])
         d2 = np.load(r2[split][0])
         np.testing.assert_array_equal(d1, d2)
+
+
+# ---------------------------------------------------------------------------
+# Multi-generator assembly tests
+# ---------------------------------------------------------------------------
+
+def test_assemble_multi_generator(tmp_path):
+    """Data from two generator subdirs is concatenated per class."""
+    from rf_datagen.constants import SIGNAL_LABELS, WINDOW_LEN
+    label = SIGNAL_LABELS[0]
+
+    gen_a = tmp_path / "parts" / "gen_a"
+    gen_b = tmp_path / "parts" / "gen_b"
+    gen_a.mkdir(parents=True)
+    gen_b.mkdir(parents=True)
+
+    arr_a = np.ones((100, WINDOW_LEN), dtype=np.complex128)
+    arr_b = np.ones((50, WINDOW_LEN), dtype=np.complex128) * 2
+    np.save(str(gen_a / f"{label}.npy"), arr_a)
+    np.save(str(gen_b / f"{label}.npy"), arr_b)
+
+    iq, tags, scenarios = assemble_parts(str(tmp_path), labels=[label])
+    assert iq.shape == (150, WINDOW_LEN)
+    assert tags == [label] * 150
+    assert len(scenarios) == 150
+
+
+def test_assemble_multi_generator_with_meta(tmp_path):
+    """Scenario metadata from multiple generators is concatenated."""
+    from rf_datagen.constants import SIGNAL_LABELS, WINDOW_LEN
+    label = SIGNAL_LABELS[0]
+
+    gen_a = tmp_path / "parts" / "gen_a"
+    gen_b = tmp_path / "parts" / "gen_b"
+    gen_a.mkdir(parents=True)
+    gen_b.mkdir(parents=True)
+
+    arr_a = np.ones((3, WINDOW_LEN), dtype=np.complex128)
+    arr_b = np.ones((2, WINDOW_LEN), dtype=np.complex128)
+    np.save(str(gen_a / f"{label}.npy"), arr_a)
+    np.save(str(gen_b / f"{label}.npy"), arr_b)
+
+    # Write meta CSVs
+    atomic_write_csv(str(gen_a / f"{label}_meta.csv"),
+                     ["scenario"], [["hf_clean"]] * 3)
+    atomic_write_csv(str(gen_b / f"{label}_meta.csv"),
+                     ["scenario"], [["vhf_mobile"]] * 2)
+
+    iq, tags, scenarios = assemble_parts(str(tmp_path), labels=[label])
+    assert len(scenarios) == 5
+    assert scenarios[:3] == ["hf_clean"] * 3
+    assert scenarios[3:] == ["vhf_mobile"] * 2
+
+
+def test_assemble_legacy_flat_files(tmp_path):
+    """Legacy flat parts/*.npy files are loaded with deprecation warning."""
+    from rf_datagen.constants import SIGNAL_LABELS, WINDOW_LEN
+    label = SIGNAL_LABELS[0]
+
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    arr = np.ones((10, WINDOW_LEN), dtype=np.complex128)
+    np.save(str(parts / f"{label}.npy"), arr)
+
+    iq, tags, scenarios = assemble_parts(str(tmp_path), labels=[label])
+    assert iq.shape == (10, WINDOW_LEN)
+    assert tags == [label] * 10
+
+
+def test_assemble_empty_returns_three(tmp_path):
+    """Empty assembly returns 3-tuple with empty scenarios."""
+    iq, tags, scenarios = assemble_parts(str(tmp_path))
+    assert len(iq) == 0
+    assert tags == []
+    assert scenarios == []
