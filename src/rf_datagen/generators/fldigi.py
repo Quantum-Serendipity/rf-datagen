@@ -24,6 +24,8 @@ from .base import BaseGenerator
 log = get_logger("fldigi")
 
 CAPTURE_FS = 48000
+MODE_TIMEOUT = 900  # 15 minutes max per mode before giving up
+MAX_CHUNK_TIMEOUT = 120  # 2 minutes max waiting for a single TX chunk
 
 MODE_CHARS_PER_SEC = {
     "PSK31": 5, "PSK63": 10, "RTTY": 8, "OLIVIA": 3,
@@ -195,7 +197,8 @@ class FLDigiInstance:
                 self.server.text.add_tx(chunk_text)
             self.server.main.tx()
             chars_per_sec = MODE_CHARS_PER_SEC.get(mode_name, 5)
-            est_secs = len(chunk_text) / chars_per_sec + 10.0
+            est_secs = min(len(chunk_text) / chars_per_sec + 10.0,
+                           MAX_CHUNK_TIMEOUT)
             deadline = time.time() + est_secs
             tx_started = False
             while time.time() < deadline:
@@ -240,7 +243,7 @@ class FLDigiInstance:
         end = min(len(raw_data), nonsilent[-1] + margin)
         return raw_data[start:end]
 
-    def generate_mode(self, mode_name, text, target_fs=FS):
+    def generate_mode(self, mode_name, text, target_fs=FS, deadline=None):
         CHUNK_CHARS = 500
         MAX_RETRIES = 3
         modem_variants = FLDIGI_MODES[mode_name]
@@ -248,6 +251,11 @@ class FLDigiInstance:
         chunks = [text[i:i + CHUNK_CHARS] for i in range(0, len(text), CHUNK_CHARS)]
         all_audio = []
         for ci, chunk in enumerate(chunks):
+            if deadline and time.time() > deadline:
+                log.warning("%s: mode timeout at chunk %d/%d, "
+                            "using %d chunks captured so far",
+                            mode_name, ci, len(chunks), len(all_audio))
+                break
             modem_name = modem_variants[ci % len(modem_variants)]
             for attempt in range(MAX_RETRIES):
                 if not self._is_alive():
@@ -305,6 +313,13 @@ class FldigiGenerator(BaseGenerator):
     def run(self, output_dir, seed=42, port=7362):
         import tempfile
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # Pre-flight: skip entirely if all modes cached
+        # (avoids starting PulseAudio + fldigi instances for nothing)
+        cached = self._check_all_cached(output_dir)
+        if cached is not None:
+            log.info("fldigi: all %d modes cached — skipping", len(cached))
+            return cached
 
         configure_impairments(self.impairment_config)
 
@@ -364,7 +379,10 @@ class FldigiGenerator(BaseGenerator):
                         cps = MODE_CHARS_PER_SEC.get(mode_name, 5)
                         est_chars = int(n_samples * (self.window_len / self.fs) / 2 * cps * 1.5)
                         text = get_text_for_mode(mode_name, max(500, est_chars))
-                        iq = inst.generate_mode(mode_name, text, target_fs=self.fs)
+                        mode_deadline = time.time() + MODE_TIMEOUT
+                        iq = inst.generate_mode(mode_name, text,
+                                                target_fs=self.fs,
+                                                deadline=mode_deadline)
                         if len(iq) < self.window_len:
                             log.warning("%15s: FAILED (signal too short)",
                                         mode_name)

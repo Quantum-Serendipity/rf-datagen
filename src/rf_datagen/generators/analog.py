@@ -79,6 +79,12 @@ class AnalogGenerator(BaseGenerator):
         raise NotImplementedError("Use run() for analog generation")
 
     def run(self, output_dir, seed=42):
+        # Pre-flight: skip entirely if all classes cached
+        cached = self._check_all_cached(output_dir)
+        if cached is not None:
+            log.info("analog: all %d classes cached — skipping", len(cached))
+            return cached
+
         configure_impairments(self.impairment_config)
 
         parts_dir = os.path.join(output_dir, "parts", self.name)

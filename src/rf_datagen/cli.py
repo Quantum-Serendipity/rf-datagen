@@ -22,6 +22,43 @@ from . import pid_registry
 log = get_logger("cli")
 
 
+def _diversity_check(iq_data, tags, n_pairs=200, threshold=0.85):
+    """Spot-check signal diversity per class via magnitude spectrum similarity.
+
+    Samples random pairs of windows within each class, computes cosine
+    similarity on magnitude spectra (invariant to freq_shift phase).
+    High similarity means many windows came from the same underlying signal.
+
+    Returns list of warning strings for low-diversity classes.
+    """
+    from collections import Counter
+    warnings = []
+    counts = Counter(tags)
+
+    for label in sorted(counts):
+        count = counts[label]
+        if count < 50:
+            continue
+        indices = [i for i, t in enumerate(tags) if t == label]
+        n = min(n_pairs, len(indices))
+        pairs_a = np.random.choice(indices, n)
+        pairs_b = np.random.choice(indices, n)
+        # Magnitude spectra (removes freq_shift phase rotation)
+        spec_a = np.abs(np.fft.fft(iq_data[pairs_a], axis=1))
+        spec_b = np.abs(np.fft.fft(iq_data[pairs_b], axis=1))
+        dots = np.sum(spec_a * spec_b, axis=1)
+        norms = np.sqrt(np.sum(spec_a ** 2, axis=1)
+                        * np.sum(spec_b ** 2, axis=1))
+        sims = dots / (norms + 1e-10)
+        mean_sim = float(np.mean(sims))
+        if mean_sim > threshold:
+            warnings.append(
+                f"{label}: mean spectral similarity {mean_sim:.3f} "
+                f"(threshold {threshold}) — possible low signal diversity")
+
+    return warnings
+
+
 def cmd_generate(args):
     """Generate IQ dataset."""
     cfg = load_config(args.config)
@@ -161,6 +198,7 @@ def cmd_generate(args):
     total_windows = 0
     total_size_mb = 0.0
     all_tags = []
+    all_diversity_warnings = []
 
     for domain_name in enabled_domains:
         domain = DOMAINS[domain_name]
@@ -182,6 +220,10 @@ def cmd_generate(args):
         if len(iq_data) == 0:
             log.warning("No data generated for domain %s", domain_name)
             continue
+
+        # Diversity spot-check before saving
+        dw = _diversity_check(iq_data, tags)
+        all_diversity_warnings.extend(dw)
 
         save_dataset(iq_data, tags, scenarios, domain_dir, prefix=prefix)
 
@@ -208,6 +250,10 @@ def cmd_generate(args):
         if label in counts:
             log.info("  %15s: %d", label, counts[label])
 
+    # Post-assembly diversity spot-check
+    for w in all_diversity_warnings:
+        log.warning("DIVERSITY: %s", w)
+
     # Generation report: failures
     failed = {k: v for k, v in all_results.items() if v["status"] == "failed"}
     ok_count = sum(1 for v in all_results.values() if v["status"] in ("ok", "cached"))
@@ -227,9 +273,16 @@ def cmd_generate(args):
         "elapsed_s": round(elapsed, 1),
         "size_mb": round(total_size_mb, 1),
         "per_class": all_results,
+        "diversity_warnings": all_diversity_warnings,
     }
     report_path = os.path.join(output_dir, "generation_report.json")
     atomic_write_json(report_path, report)
+
+    if all_diversity_warnings:
+        log.error("DIVERSITY CHECK FAILED — %d classes have low signal "
+                  "diversity. Training on this data will produce a bad model.",
+                  len(all_diversity_warnings))
+        return 3
 
     if failed:
         log.warning("Generated %d/%d classes (%d failed)",

@@ -152,6 +152,13 @@ class BaseGenerator(ABC):
         Failed classes have status "failed" with a "reason" key.
         Cached classes have status "cached".
         """
+        # Pre-flight: skip entirely if all classes cached
+        cached = self._check_all_cached(output_dir)
+        if cached is not None:
+            log.info("%s: all %d classes cached — skipping",
+                     self.name, len(cached))
+            return cached
+
         configure_impairments(self.impairment_config)
 
         parts_dir = os.path.join(output_dir, "parts", self.name)
@@ -233,6 +240,32 @@ class BaseGenerator(ABC):
             results[class_name] = {"status": "ok", "samples": n_samples,
                                    "raw_windows": len(raw_windows),
                                    "time_s": round(elapsed, 1)}
+
+        return results
+
+    def _check_all_cached(self, output_dir):
+        """Pre-flight: return cached results if ALL classes are cached, else None.
+
+        Avoids expensive setup (process spawning, TTS init) when no work
+        is needed.
+        """
+        parts_dir = os.path.join(output_dir, "parts", self.name)
+        classes = self._resolve_classes()
+        if not classes:
+            return {}
+
+        results = {}
+        for class_name in classes:
+            n_samples = self._boosted_count(class_name)
+            npy_path = os.path.join(parts_dir, f"{class_name}.npy")
+            meta_path = os.path.join(parts_dir, f"{class_name}_meta.csv")
+            hash_path = os.path.join(parts_dir, f"{class_name}.hash")
+            cfg_hash = self._config_hash(class_name, n_samples)
+
+            if not self._check_checkpoint(npy_path, meta_path, hash_path,
+                                          n_samples, cfg_hash):
+                return None  # At least one class needs generation
+            results[class_name] = {"status": "cached", "samples": n_samples}
 
         return results
 
