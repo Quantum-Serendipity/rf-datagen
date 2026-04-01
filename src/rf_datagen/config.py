@@ -175,6 +175,7 @@ def checkpoint_config_hash(gen_cfg: "GeneratorConfig",
         "generator": gen_cfg._hash_dict(),
         "generator_name": generator_name,
         "impairments": imp_cfg._hash_dict(),
+        "pipeline_version": 2,  # v2: per-sample synthesis for diversity
     }
     raw = json.dumps(blob, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode()).hexdigest()[:12]

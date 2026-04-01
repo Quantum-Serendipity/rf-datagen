@@ -1414,23 +1414,54 @@ class SyntheticGenerator(BaseGenerator):
     signal_classes = SYNTHETIC_CLASSES
     synthesizers = SYNTHESIZERS
 
+    def _synth_one(self, class_name):
+        """Generate one raw signal for a class, with CW/RSID handling."""
+        synth_fn = self.synthesizers[class_name]
+        if class_name == "CW":
+            seg = synth_fn(fs=self.fs, window_len=self.window_len,
+                           wpm_range=self.config.cw_wpm_range)
+        else:
+            seg = synth_fn(fs=self.fs, window_len=self.window_len)
+        if class_name != "NOISE" and np.random.random() < self.config.rsid_probability:
+            rsid = synth_rsid(fs=self.fs, window_len=self.window_len)
+            gap = make_gap(0.05, 0.2, self.fs)
+            seg = np.concatenate([rsid, gap, seg])
+        return seg
+
     def generate_class(self, class_name, rng=None):
         """Override to add CW wpm_range and RSID injection."""
-        synth_fn = self.synthesizers[class_name]
         segments = []
         target_samples = max(self.window_len * 10,
                              self.samples_per_class * self.window_len // 4)
         total = 0
         while total < target_samples:
-            if class_name == "CW":
-                seg = synth_fn(fs=self.fs, window_len=self.window_len,
-                               wpm_range=self.config.cw_wpm_range)
-            else:
-                seg = synth_fn(fs=self.fs, window_len=self.window_len)
-            if class_name != "NOISE" and np.random.random() < self.config.rsid_probability:
-                rsid = synth_rsid(fs=self.fs, window_len=self.window_len)
-                gap = make_gap(0.05, 0.2, self.fs)
-                seg = np.concatenate([rsid, gap, seg])
-            segments.append(seg)
-            total += len(seg)
+            segments.append(self._synth_one(class_name))
+            total += len(segments[-1])
         return np.concatenate(segments)
+
+    def generate_windows(self, class_name, n_windows):
+        """One fresh synthesis per window for maximum diversity."""
+        from ..impairments.effects import normalize_power
+        power_threshold = self.impairment_config.window_power_threshold
+        windows = np.zeros((n_windows, self.window_len), dtype=np.complex128)
+        i = 0
+        max_retries = n_windows * 3
+        attempts = 0
+        while i < n_windows and attempts < max_retries:
+            raw = self._synth_one(class_name)
+            attempts += 1
+            if len(raw) < self.window_len:
+                continue
+            start = np.random.randint(0, len(raw) - self.window_len + 1)
+            w = raw[start:start + self.window_len].copy()
+            if np.mean(np.abs(w) ** 2) <= power_threshold:
+                continue
+            windows[i] = normalize_power(w)
+            i += 1
+        if i < n_windows:
+            from ..logging_config import get_logger
+            log = get_logger("generator")
+            log.warning("%s: only got %d/%d windows after %d attempts",
+                        class_name, i, n_windows, attempts)
+            windows = windows[:i]
+        return windows

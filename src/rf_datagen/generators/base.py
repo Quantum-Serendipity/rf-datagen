@@ -111,6 +111,39 @@ class BaseGenerator(ABC):
             total += len(seg)
         return np.concatenate(segments)
 
+    def generate_windows(self, class_name, n_windows):
+        """Produce n_windows independent raw IQ windows for one class.
+
+        Each window comes from a fresh synthesis call with random crop,
+        maximizing signal diversity. Returns [n_windows, window_len]
+        complex array with each window normalized to unit power.
+        """
+        from ..impairments.effects import normalize_power
+        synth_fn = self.synthesizers[class_name]
+        power_threshold = self.impairment_config.window_power_threshold
+        windows = np.zeros((n_windows, self.window_len), dtype=np.complex128)
+        i = 0
+        max_retries = n_windows * 3  # safety valve
+        attempts = 0
+        while i < n_windows and attempts < max_retries:
+            raw = synth_fn(fs=self.fs, window_len=self.window_len)
+            attempts += 1
+            if len(raw) < self.window_len:
+                continue
+            # Random crop
+            start = np.random.randint(0, len(raw) - self.window_len + 1)
+            w = raw[start:start + self.window_len].copy()
+            # Power filter
+            if np.mean(np.abs(w) ** 2) <= power_threshold:
+                continue
+            windows[i] = normalize_power(w)
+            i += 1
+        if i < n_windows:
+            log.warning("%s: only got %d/%d windows after %d attempts",
+                        class_name, i, n_windows, attempts)
+            windows = windows[:i]
+        return windows
+
     def run(self, output_dir, seed=42):
         """Full pipeline: generate -> extract windows -> impair -> save.
 
@@ -132,9 +165,6 @@ class BaseGenerator(ABC):
 
         log.info("%s: generating %d classes, %d samples each",
                  self.name, len(classes), self.samples_per_class)
-
-        stride = self.impairment_config.effective_stride(self.window_len)
-        power_threshold = self.impairment_config.window_power_threshold
 
         for ci, class_name in enumerate(classes):
             if shutdown_requested():
@@ -160,16 +190,24 @@ class BaseGenerator(ABC):
             np.random.seed(class_seed)
             t0 = time.time()
 
-            raw_iq = self.generate_class(class_name)
-            if len(raw_iq) < self.window_len:
-                log.warning("%15s: FAILED (signal too short)", class_name)
-                results[class_name] = {"status": "failed",
-                                       "reason": "signal too short"}
-                continue
-
-            raw_windows = extract_windows(raw_iq, window_len=self.window_len,
-                                          stride=stride,
-                                          power_threshold=power_threshold)
+            # Use per-sample synthesis if synthesizers are available,
+            # otherwise fall back to bulk generate + extract_windows
+            if class_name in self.synthesizers:
+                raw_windows = self.generate_windows(class_name, n_samples)
+            else:
+                raw_iq = self.generate_class(class_name)
+                if len(raw_iq) < self.window_len:
+                    log.warning("%15s: FAILED (signal too short)",
+                                class_name)
+                    results[class_name] = {"status": "failed",
+                                           "reason": "signal too short"}
+                    continue
+                stride = self.impairment_config.effective_stride(
+                    self.window_len)
+                power_thr = self.impairment_config.window_power_threshold
+                raw_windows = extract_windows(
+                    raw_iq, window_len=self.window_len,
+                    stride=stride, power_threshold=power_thr)
             if len(raw_windows) == 0:
                 log.warning("%15s: FAILED (no valid windows)", class_name)
                 results[class_name] = {"status": "failed",
