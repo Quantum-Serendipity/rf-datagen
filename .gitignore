@@ -59,3 +59,6 @@ piper-voices/
 *.swp
 *.swo
 *~
+artifacts/validation_models_research.md
+.gitignore
+docs/process-orphan-prevention.md
