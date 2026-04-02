@@ -1,8 +1,10 @@
 """BaseGenerator ABC — shared generation pipeline."""
 
+import multiprocessing
 import os
 import time
 from abc import ABC
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 
@@ -15,6 +17,66 @@ from ..logging_config import get_logger
 from ..output import atomic_save_npy, atomic_write_csv
 
 log = get_logger("generator")
+
+
+def _worker_generate_class(generator, class_name, ci, seed, parts_dir):
+    """Process-pool worker: generate + impair + save one class.
+
+    Called via fork so the generator object (with synthesizers, config,
+    impairment state) is inherited from the parent process.
+    """
+    n_samples = generator._boosted_count(class_name)
+    npy_path = os.path.join(parts_dir, f"{class_name}.npy")
+    meta_path = os.path.join(parts_dir, f"{class_name}_meta.csv")
+    hash_path = os.path.join(parts_dir, f"{class_name}.hash")
+    cfg_hash = generator._config_hash(class_name, n_samples)
+
+    if generator._check_checkpoint(npy_path, meta_path, hash_path,
+                                   n_samples, cfg_hash):
+        log.info("%15s: %d samples (cached)", class_name, n_samples)
+        return class_name, {"status": "cached", "samples": n_samples}
+
+    class_seed = seed + ci * 1000
+    np.random.seed(class_seed)
+    t0 = time.time()
+
+    if class_name in generator.synthesizers:
+        raw_windows = generator.generate_windows(class_name, n_samples)
+    else:
+        raw_iq = generator.generate_class(class_name)
+        if len(raw_iq) < generator.window_len:
+            log.warning("%15s: FAILED (signal too short)", class_name)
+            return class_name, {"status": "failed",
+                                "reason": "signal too short"}
+        stride = generator.impairment_config.effective_stride(
+            generator.window_len)
+        power_thr = generator.impairment_config.window_power_threshold
+        raw_windows = extract_windows(
+            raw_iq, window_len=generator.window_len,
+            stride=stride, power_threshold=power_thr)
+
+    if len(raw_windows) == 0:
+        log.warning("%15s: FAILED (no valid windows)", class_name)
+        return class_name, {"status": "failed",
+                            "reason": "no valid windows"}
+
+    samples, meta = apply_impairments(
+        raw_windows, n_samples, fs=generator.fs,
+        window_len=generator.window_len, return_metadata=True,
+        dtype=generator._dtype)
+
+    atomic_save_npy(npy_path, samples)
+    atomic_write_csv(meta_path, ["scenario"],
+                     [[s] for s in meta["scenarios"]])
+    generator._write_hash(hash_path, cfg_hash)
+
+    elapsed = time.time() - t0
+    size_mb = os.path.getsize(npy_path) / (1024 * 1024)
+    log.info("%15s: %d raw -> %d samples (%.1fs, %.0f MB)",
+             class_name, len(raw_windows), n_samples, elapsed, size_mb)
+    return class_name, {"status": "ok", "samples": n_samples,
+                        "raw_windows": len(raw_windows),
+                        "time_s": round(elapsed, 1)}
 
 
 def make_gap(min_s, max_s, fs):
@@ -151,6 +213,8 @@ class BaseGenerator(ABC):
             {"FT8": {"status": "ok", "samples": 6000, "time_s": 12.3}, ...}
         Failed classes have status "failed" with a "reason" key.
         Cached classes have status "cached".
+
+        Parallelizes across classes when config.workers > 1 (or auto).
         """
         # Pre-flight: skip entirely if all classes cached
         cached = self._check_all_cached(output_dir)
@@ -170,76 +234,41 @@ class BaseGenerator(ABC):
             log.info("%s: no classes to generate", self.name)
             return results
 
-        log.info("%s: generating %d classes, %d samples each",
-                 self.name, len(classes), self.samples_per_class)
+        n_workers = max(1, self.config.workers or os.cpu_count() or 1)
+        n_workers = min(n_workers, len(classes))
 
-        for ci, class_name in enumerate(classes):
-            if shutdown_requested():
-                log.warning("Shutdown requested — stopping after "
-                            "%d/%d classes", ci, len(classes))
-                break
+        log.info("%s: generating %d classes, %d samples each, %d workers",
+                 self.name, len(classes), self.samples_per_class, n_workers)
 
-            n_samples = self._boosted_count(class_name)
-            npy_path = os.path.join(parts_dir, f"{class_name}.npy")
-            meta_path = os.path.join(parts_dir, f"{class_name}_meta.csv")
-            hash_path = os.path.join(parts_dir, f"{class_name}.hash")
-            cfg_hash = self._config_hash(class_name, n_samples)
-
-            # Skip if checkpoint exists with matching config
-            if self._check_checkpoint(npy_path, meta_path, hash_path,
-                                      n_samples, cfg_hash):
-                log.info("%15s: %d samples (cached)", class_name, n_samples)
-                results[class_name] = {"status": "cached",
-                                       "samples": n_samples}
-                continue
-
-            class_seed = seed + ci * 1000
-            np.random.seed(class_seed)
-            t0 = time.time()
-
-            # Use per-sample synthesis if synthesizers are available,
-            # otherwise fall back to bulk generate + extract_windows
-            if class_name in self.synthesizers:
-                raw_windows = self.generate_windows(class_name, n_samples)
-            else:
-                raw_iq = self.generate_class(class_name)
-                if len(raw_iq) < self.window_len:
-                    log.warning("%15s: FAILED (signal too short)",
-                                class_name)
-                    results[class_name] = {"status": "failed",
-                                           "reason": "signal too short"}
-                    continue
-                stride = self.impairment_config.effective_stride(
-                    self.window_len)
-                power_thr = self.impairment_config.window_power_threshold
-                raw_windows = extract_windows(
-                    raw_iq, window_len=self.window_len,
-                    stride=stride, power_threshold=power_thr)
-            if len(raw_windows) == 0:
-                log.warning("%15s: FAILED (no valid windows)", class_name)
-                results[class_name] = {"status": "failed",
-                                       "reason": "no valid windows"}
-                continue
-
-            samples, meta = apply_impairments(
-                raw_windows, n_samples, fs=self.fs,
-                window_len=self.window_len, return_metadata=True,
-                dtype=self._dtype)
-
-            # Save checkpoint atomically
-            atomic_save_npy(npy_path, samples)
-            atomic_write_csv(meta_path, ["scenario"],
-                             [[s] for s in meta["scenarios"]])
-            self._write_hash(hash_path, cfg_hash)
-
-            elapsed = time.time() - t0
-            size_mb = os.path.getsize(npy_path) / (1024 * 1024)
-            log.info("%15s: %d raw -> %d samples (%.1fs, %.0f MB)",
-                     class_name, len(raw_windows), n_samples, elapsed,
-                     size_mb)
-            results[class_name] = {"status": "ok", "samples": n_samples,
-                                   "raw_windows": len(raw_windows),
-                                   "time_s": round(elapsed, 1)}
+        if n_workers <= 1:
+            # Sequential — original path
+            for ci, class_name in enumerate(classes):
+                if shutdown_requested():
+                    log.warning("Shutdown requested — stopping after "
+                                "%d/%d classes", ci, len(classes))
+                    break
+                name, result = _worker_generate_class(
+                    self, class_name, ci, seed, parts_dir)
+                results[name] = result
+        else:
+            # Parallel across classes using fork
+            ctx = multiprocessing.get_context("fork")
+            with ProcessPoolExecutor(max_workers=n_workers,
+                                     mp_context=ctx) as pool:
+                futures = {}
+                for ci, class_name in enumerate(classes):
+                    f = pool.submit(_worker_generate_class,
+                                    self, class_name, ci, seed, parts_dir)
+                    futures[f] = class_name
+                for f in as_completed(futures):
+                    try:
+                        name, result = f.result()
+                        results[name] = result
+                    except Exception as e:
+                        name = futures[f]
+                        log.error("%15s: worker exception: %s", name, e)
+                        results[name] = {"status": "failed",
+                                         "reason": str(e)}
 
         return results
 
