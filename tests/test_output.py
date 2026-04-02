@@ -109,7 +109,7 @@ def test_assemble_multi_generator(tmp_path):
     np.save(str(gen_a / f"{label}.npy"), arr_a)
     np.save(str(gen_b / f"{label}.npy"), arr_b)
 
-    iq, tags, scenarios = assemble_parts(str(tmp_path), labels=[label])
+    iq, tags, scenarios, snrs = assemble_parts(str(tmp_path), labels=[label])
     assert iq.shape == (150, WINDOW_LEN)
     assert tags == [label] * 150
     assert len(scenarios) == 150
@@ -132,14 +132,16 @@ def test_assemble_multi_generator_with_meta(tmp_path):
 
     # Write meta CSVs
     atomic_write_csv(str(gen_a / f"{label}_meta.csv"),
-                     ["scenario"], [["hf_clean"]] * 3)
+                     ["scenario", "snr"], [["hf_clean", "10"]] * 3)
     atomic_write_csv(str(gen_b / f"{label}_meta.csv"),
-                     ["scenario"], [["vhf_mobile"]] * 2)
+                     ["scenario", "snr"], [["vhf_mobile", "20"]] * 2)
 
-    iq, tags, scenarios = assemble_parts(str(tmp_path), labels=[label])
+    iq, tags, scenarios, snrs = assemble_parts(str(tmp_path), labels=[label])
     assert len(scenarios) == 5
     assert scenarios[:3] == ["hf_clean"] * 3
     assert scenarios[3:] == ["vhf_mobile"] * 2
+    assert snrs[:3] == ["10"] * 3
+    assert snrs[3:] == ["20"] * 2
 
 
 def test_assemble_legacy_flat_files(tmp_path):
@@ -152,14 +154,15 @@ def test_assemble_legacy_flat_files(tmp_path):
     arr = np.ones((10, WINDOW_LEN), dtype=np.complex128)
     np.save(str(parts / f"{label}.npy"), arr)
 
-    iq, tags, scenarios = assemble_parts(str(tmp_path), labels=[label])
+    iq, tags, scenarios, snrs = assemble_parts(str(tmp_path), labels=[label])
     assert iq.shape == (10, WINDOW_LEN)
     assert tags == [label] * 10
 
 
-def test_assemble_empty_returns_three(tmp_path):
-    """Empty assembly returns 3-tuple with empty scenarios."""
-    iq, tags, scenarios = assemble_parts(str(tmp_path))
+def test_assemble_empty_returns_four(tmp_path):
+    """Empty assembly returns 4-tuple with empty scenarios and snrs."""
+    iq, tags, scenarios, snrs = assemble_parts(str(tmp_path))
     assert len(iq) == 0
     assert tags == []
     assert scenarios == []
+    assert snrs == []

@@ -79,8 +79,8 @@ def load_checkpoint(class_name, output_dir):
     return None
 
 
-def write_csv(tags, scenarios, output_path):
-    """Write metadata CSV with idx, mode, scenario, domain, category, subcategory."""
+def write_csv(tags, scenarios, output_path, snrs=None):
+    """Write metadata CSV with idx, mode, scenario, snr, domain, category, subcategory."""
     from .taxonomy import get_category
     from .domains import SIGNAL_DOMAIN_MAP
 
@@ -91,10 +91,11 @@ def write_csv(tags, scenarios, output_path):
         domain_name = domain_obj.name if domain_obj else ""
         sample_rate = domain_obj.sample_rate if domain_obj else 0
         window_length = domain_obj.window_length if domain_obj else 0
-        rows.append([i, tag, scenario, domain_name, sample_rate,
+        snr = snrs[i] if snrs is not None and i < len(snrs) else ""
+        rows.append([i, tag, scenario, snr, domain_name, sample_rate,
                      window_length, category, subcategory])
 
-    header = ["idx", "mode", "scenario", "domain", "sample_rate",
+    header = ["idx", "mode", "scenario", "snr", "domain", "sample_rate",
               "window_length", "category", "subcategory"]
     atomic_write_csv(output_path, header, rows)
 
@@ -119,18 +120,36 @@ def _validate_checkpoint(windows, label, source, window_len):
     return True
 
 
-def _load_meta_scenarios(meta_path):
-    """Load scenario strings from a _meta.csv sidecar file."""
+def _load_meta(meta_path):
+    """Load scenario and snr data from a _meta.csv sidecar file.
+
+    Returns (scenarios, snrs) where each is a list of strings.
+    """
     import csv as _csv
     if not os.path.exists(meta_path):
-        return []
+        return [], []
     try:
         with open(meta_path) as f:
             reader = _csv.reader(f)
-            next(reader, None)  # skip header
-            return [row[0] for row in reader if row]
+            header = next(reader, None)
+            if header is None:
+                return [], []
+            # Find column indices (backward compat: old files may lack snr)
+            scenario_idx = 0
+            snr_idx = header.index("snr") if "snr" in header else -1
+            scenarios = []
+            snrs = []
+            for row in reader:
+                if not row:
+                    continue
+                scenarios.append(row[scenario_idx] if scenario_idx < len(row) else "")
+                if snr_idx >= 0 and snr_idx < len(row):
+                    snrs.append(row[snr_idx])
+                else:
+                    snrs.append("")
+            return scenarios, snrs
     except Exception:
-        return []
+        return [], []
 
 
 def assemble_parts(output_dir, generator_name=None, window_len=None,
@@ -147,10 +166,11 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
         window_len: Expected window length. If None, uses WINDOW_LEN.
         labels: Ordered list of labels to include. If None, uses SIGNAL_LABELS.
 
-    Returns (iq_data, tags, scenarios) where:
+    Returns (iq_data, tags, scenarios, snrs) where:
         iq_data: complex array of shape [N, window_len]
         tags: list of class name strings, length N
         scenarios: list of scenario name strings, length N
+        snrs: list of snr strings, length N
     """
     if window_len is None:
         from .constants import WINDOW_LEN
@@ -160,7 +180,7 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
 
     parts_dir = os.path.join(output_dir, "parts")
     if not os.path.exists(parts_dir):
-        return np.array([]), [], []
+        return np.array([]), [], [], []
 
     # Discover generator subdirectories
     gen_dirs = sorted(
@@ -180,10 +200,12 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
     all_windows = []
     all_tags = []
     all_scenarios = []
+    all_snrs = []
 
     for label in labels:
         label_windows = []
         label_scenarios = []
+        label_snrs = []
         contributions = {}
 
         # Load from generator subdirectories
@@ -203,11 +225,13 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
             contributions[gen_name] = len(windows)
 
             meta_path = os.path.join(parts_dir, gen_name, f"{label}_meta.csv")
-            scenarios = _load_meta_scenarios(meta_path)
+            scenarios, snrs = _load_meta(meta_path)
             if len(scenarios) == len(windows):
                 label_scenarios.extend(scenarios)
+                label_snrs.extend(snrs)
             else:
                 label_scenarios.extend([""] * len(windows))
+                label_snrs.extend([""] * len(windows))
 
         # Legacy flat files fallback
         if has_flat:
@@ -222,11 +246,13 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
                     label_windows.append(windows)
                     contributions["flat"] = len(windows)
                     flat_meta = os.path.join(parts_dir, f"{label}_meta.csv")
-                    scenarios = _load_meta_scenarios(flat_meta)
+                    scenarios, snrs = _load_meta(flat_meta)
                     if len(scenarios) == len(windows):
                         label_scenarios.extend(scenarios)
+                        label_snrs.extend(snrs)
                     else:
                         label_scenarios.extend([""] * len(windows))
+                        label_snrs.extend([""] * len(windows))
 
         if not label_windows:
             continue
@@ -241,16 +267,17 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
         all_windows.append(combined)
         all_tags.extend([label] * len(combined))
         all_scenarios.extend(label_scenarios)
+        all_snrs.extend(label_snrs)
 
     if not all_windows:
-        return np.array([]), [], []
+        return np.array([]), [], [], []
 
     iq_data = np.concatenate(all_windows, axis=0)
-    return iq_data, all_tags, all_scenarios
+    return iq_data, all_tags, all_scenarios, all_snrs
 
 
 def save_dataset(iq_data, tags, scenarios, output_dir, prefix="rf_datagen",
-                 split_ratios=None, seed=42):
+                 split_ratios=None, seed=42, snrs=None):
     """Save assembled dataset to output directory.
 
     Args:
@@ -263,6 +290,7 @@ def save_dataset(iq_data, tags, scenarios, output_dir, prefix="rf_datagen",
             When provided, produces separate files per split with
             stratified class balance.  Default None = no split.
         seed: RNG seed for reproducible splitting.
+        snrs: Optional list of SNR values, length N.
 
     Returns:
         (iq_path, csv_path) for unsplit, or dict of paths per split.
@@ -273,7 +301,7 @@ def save_dataset(iq_data, tags, scenarios, output_dir, prefix="rf_datagen",
         iq_path = os.path.join(output_dir, f"{prefix}_iq.npy")
         csv_path = os.path.join(output_dir, f"{prefix}_tags.csv")
         atomic_save_npy(iq_path, iq_data)
-        write_csv(tags, scenarios, csv_path)
+        write_csv(tags, scenarios, csv_path, snrs=snrs)
         log.info("Saved %d windows to %s", len(iq_data), iq_path)
         log.info("Saved metadata to %s", csv_path)
         return iq_path, csv_path
@@ -309,11 +337,12 @@ def save_dataset(iq_data, tags, scenarios, output_dir, prefix="rf_datagen",
         split_iq = iq_data[idxs]
         split_tags = [tags[i] for i in idxs]
         split_scenarios = [scenarios[i] for i in idxs]
+        split_snrs = [snrs[i] for i in idxs] if snrs else None
 
         iq_path = os.path.join(output_dir, f"{prefix}_{split_name}_iq.npy")
         csv_path = os.path.join(output_dir, f"{prefix}_{split_name}_tags.csv")
         atomic_save_npy(iq_path, split_iq)
-        write_csv(split_tags, split_scenarios, csv_path)
+        write_csv(split_tags, split_scenarios, csv_path, snrs=split_snrs)
         log.info("Saved %d %s windows to %s", len(split_iq), split_name,
                  iq_path)
         paths[split_name] = (iq_path, csv_path)

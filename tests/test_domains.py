@@ -100,14 +100,14 @@ def test_assemble_parts_multi_domain(tmp_path):
     np.save(str(parts_dir / "BLE.npy"), ble_data)
 
     # Assemble narrowband domain
-    iq_nb, tags_nb, _ = assemble_parts(str(tmp_path), window_len=2048, labels=["FT8"])
+    iq_nb, tags_nb, *_ = assemble_parts(str(tmp_path), window_len=2048, labels=["FT8"])
     assert iq_nb.shape == (5, 2048)
     assert np.iscomplexobj(iq_nb)
     assert iq_nb.dtype == np.complex128
     assert tags_nb == ["FT8"] * 5
 
     # Assemble moderate domain
-    iq_mod, tags_mod, _ = assemble_parts(str(tmp_path), window_len=131072, labels=["BLE"])
+    iq_mod, tags_mod, *_ = assemble_parts(str(tmp_path), window_len=131072, labels=["BLE"])
     assert iq_mod.shape == (3, 131072)
     assert np.iscomplexobj(iq_mod)
     assert iq_mod.dtype == np.complex64
@@ -123,7 +123,7 @@ def test_assemble_parts_validates_shape(tmp_path):
     wrong_shape = np.ones((4, 512), dtype=np.complex128)
     np.save(str(parts_dir / "FT8.npy"), wrong_shape)
 
-    iq_data, tags, _ = assemble_parts(str(tmp_path), window_len=2048, labels=["FT8"])
+    iq_data, tags, *_ = assemble_parts(str(tmp_path), window_len=2048, labels=["FT8"])
     assert len(tags) == 0
     assert iq_data.size == 0
 
@@ -137,6 +137,6 @@ def test_assemble_parts_skips_nan(tmp_path):
     nan_data[1, 100] = np.nan + 0j  # inject a NaN
     np.save(str(parts_dir / "FT8.npy"), nan_data)
 
-    iq_data, tags, _ = assemble_parts(str(tmp_path), window_len=2048, labels=["FT8"])
+    iq_data, tags, *_ = assemble_parts(str(tmp_path), window_len=2048, labels=["FT8"])
     assert len(tags) == 0
     assert iq_data.size == 0

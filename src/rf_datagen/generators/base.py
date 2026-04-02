@@ -66,8 +66,12 @@ def _worker_generate_class(generator, class_name, ci, seed, parts_dir):
         dtype=generator._dtype)
 
     atomic_save_npy(npy_path, samples)
-    atomic_write_csv(meta_path, ["scenario"],
-                     [[s] for s in meta["scenarios"]])
+    snrs = meta.get("snrs", [])
+    meta_rows = []
+    for i, s in enumerate(meta["scenarios"]):
+        snr = snrs[i] if i < len(snrs) else ""
+        meta_rows.append([s, snr])
+    atomic_write_csv(meta_path, ["scenario", "snr"], meta_rows)
     generator._write_hash(hash_path, cfg_hash)
 
     elapsed = time.time() - t0

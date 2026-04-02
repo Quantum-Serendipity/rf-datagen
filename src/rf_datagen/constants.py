@@ -7,7 +7,7 @@ FS = 12_000              # IQ sample rate (Hz)
 WINDOW_LEN = 2048        # Samples per training window (~170ms at 12 kHz)
 MAX_FREQ_OFFSET = 500    # Hz (RTL-SDR realistic carrier offset)
 
-SNR_LEVELS = [25, 20, 15, 10, 5, 0, -5, -10]  # dB
+SNR_LEVELS = [30, 25, 20, 15, 10, 5, 0]  # dB
 
 # Canonical signal labels — single source of truth in domains.py
 SIGNAL_LABELS = list(ALL_SIGNAL_LABELS)

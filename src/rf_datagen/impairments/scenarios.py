@@ -17,6 +17,7 @@ from .effects import (
     apply_doppler_rate, apply_tapped_delay_line,
     apply_clutter, apply_ism_interference,
     apply_signal_mixing,
+    apply_noise_budget,
     _fading_tap,
 )
 from .transmitter import TransmitterModel
@@ -164,12 +165,14 @@ def _apply_scenario_hf_clean(sig, snr_db, fs=FS):
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
     if np.random.random() < 0.25:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 1.0}]
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
 def _apply_scenario_hf_good(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
+    # Multiplicative effects
     if np.random.random() < 0.15:
         sig = TransmitterModel("CASUAL").apply(sig, fs)
     sig = _watterson(sig, fs)
@@ -180,16 +183,19 @@ def _apply_scenario_hf_good(sig, snr_db, fs=FS):
         sig = apply_iq_imbalance(sig)
     if np.random.random() < 0.2:
         sig = apply_phase_noise(sig, fs)
-    if np.random.random() < 0.15:
-        sig = apply_atmospheric_noise(sig, fs)
     if np.random.random() < 0.2:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    # Budgeted additive noise
+    sources = [{"type": "awgn", "weight": 3.0}]
+    if np.random.random() < 0.15:
+        sources.append({"type": "atmospheric", "weight": 1.0})
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
 def _apply_scenario_hf_poor(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
+    # Multiplicative effects
     if np.random.random() < 0.15:
         sig = TransmitterModel("CASUAL").apply(sig, fs)
     sig = _watterson(sig, fs)
@@ -200,16 +206,20 @@ def _apply_scenario_hf_poor(sig, snr_db, fs=FS):
         sig = apply_iq_imbalance(sig)
     if np.random.random() < 0.3:
         sig = apply_phase_noise(sig, fs)
-    sig = apply_atmospheric_noise(sig, fs)
-    if np.random.random() < 0.4:
-        sig = apply_impulse_noise(sig, fs)
-    if np.random.random() < 0.2:
-        sig = apply_adjacent_signal(sig, fs)
-    if np.random.random() < 0.15:
-        sig = apply_powerline_hum(sig, fs)
     if np.random.random() < 0.25:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    # Budgeted additive noise — atmospheric always present, others probabilistic
+    sources = [
+        {"type": "awgn", "weight": 2.0},
+        {"type": "atmospheric", "weight": 2.0},
+    ]
+    if np.random.random() < 0.4:
+        sources.append({"type": "impulse", "weight": 1.0})
+    if np.random.random() < 0.2:
+        sources.append({"type": "adjacent", "weight": 1.0})
+    if np.random.random() < 0.15:
+        sources.append({"type": "hum", "weight": 0.5})
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
@@ -225,7 +235,8 @@ def _apply_scenario_vhf_mobile(sig, snr_db, fs=FS):
         sig = apply_phase_noise(sig, fs)
     if np.random.random() < 0.3:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 1.0}]
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
@@ -235,11 +246,12 @@ def _apply_scenario_uhf_urban(sig, snr_db, fs=FS):
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
     if np.random.random() < 0.3:
         sig = apply_iq_imbalance(sig)
-    if np.random.random() < 0.2:
-        sig = apply_adjacent_signal(sig, fs)
     if np.random.random() < 0.3:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 3.0}]
+    if np.random.random() < 0.2:
+        sources.append({"type": "adjacent", "weight": 1.0})
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
@@ -262,12 +274,14 @@ def _apply_scenario_sdr_desktop(sig, snr_db, fs=FS):
         sig = apply_adc_quantization(sig, bits=np.random.choice([8, 10]))
     if np.random.random() < 0.3:
         sig = apply_clock_jitter(sig, fs)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 1.0}]
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
 def _apply_scenario_contest_crowded(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
+    # Multiplicative effects
     if np.random.random() < 0.10:
         sig = TransmitterModel("CASUAL").apply(sig, fs)
     if np.random.random() < 0.5:
@@ -275,18 +289,18 @@ def _apply_scenario_contest_crowded(sig, snr_db, fs=FS):
     else:
         sig = apply_rayleigh(sig)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
-    if _INTERFERER_POOL is not None:
-        sig = apply_real_interferer(sig, n_interferers=np.random.randint(1, 4), fs=fs)
-    else:
-        for _ in range(np.random.randint(1, 4)):
-            sig = apply_adjacent_signal(sig, fs)
-    if np.random.random() < 0.3:
-        sig = apply_powerline_hum(sig, fs)
     if np.random.random() < 0.25:
         sig = apply_iq_imbalance(sig)
     if np.random.random() < 0.3:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    # Budgeted additive noise — multiple adjacent signals are key to this scenario
+    n_adj = np.random.randint(1, 4)
+    sources = [{"type": "awgn", "weight": 2.0}]
+    for _ in range(n_adj):
+        sources.append({"type": "adjacent", "weight": 1.0})
+    if np.random.random() < 0.3:
+        sources.append({"type": "hum", "weight": 0.5})
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
@@ -306,7 +320,8 @@ def _apply_scenario_overdriven(sig, snr_db, fs=FS):
         sig = apply_phase_noise(sig, fs)
     if np.random.random() < 0.3:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 1.0}]
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
@@ -323,7 +338,8 @@ def _apply_scenario_poorly_operated(sig, snr_db, fs=FS):
         sig = apply_iq_imbalance(sig)
     if np.random.random() < 0.3:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 1.0}]
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
@@ -336,11 +352,12 @@ def _apply_scenario_vintage(sig, snr_db, fs=FS):
     else:
         sig = apply_rayleigh(sig)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
-    if np.random.random() < 0.2:
-        sig = apply_atmospheric_noise(sig, fs)
     if np.random.random() < 0.3:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 3.0}]
+    if np.random.random() < 0.2:
+        sources.append({"type": "atmospheric", "weight": 1.0})
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
@@ -357,7 +374,8 @@ def _apply_scenario_near_far(sig, snr_db, fs=FS):
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
     if np.random.random() < 0.3:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 1.0}]
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
@@ -365,15 +383,17 @@ def _apply_scenario_auroral(sig, snr_db, fs=FS):
     mfo = _config.max_freq_offset
     sig = apply_auroral_scatter(sig, fs)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
-    if np.random.random() < 0.6:
-        sig = apply_atmospheric_noise(sig, fs)
-    if np.random.random() < 0.3:
-        sig = apply_impulse_noise(sig, fs)
     if np.random.random() < 0.2:
         sig = apply_iq_imbalance(sig)
     if np.random.random() < 0.25:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    # Budgeted additive noise
+    sources = [{"type": "awgn", "weight": 2.0}]
+    if np.random.random() < 0.6:
+        sources.append({"type": "atmospheric", "weight": 1.5})
+    if np.random.random() < 0.3:
+        sources.append({"type": "impulse", "weight": 1.0})
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
@@ -382,9 +402,7 @@ def _apply_scenario_auroral(sig, snr_db, fs=FS):
 def _apply_scenario_indoor_multipath(sig, snr_db, fs=FS):
     """Indoor multipath: WiFi, BLE, Zigbee, DECT."""
     mfo = _config.max_freq_offset
-    # Rician K=0-10 dB (LOS often present indoors)
     sig = apply_rician(sig, fs, k_db=np.random.uniform(0, 10))
-    # Short multipath delays (< 100 ns in indoor)
     if np.random.random() < 0.6:
         delays = [0, 50e-9, 100e-9]
         powers = [0, np.random.uniform(-6, -3), np.random.uniform(-12, -6)]
@@ -395,20 +413,18 @@ def _apply_scenario_indoor_multipath(sig, snr_db, fs=FS):
         sig = apply_iq_imbalance(sig)
     if np.random.random() < 0.2:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 1.0}]
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
 def _apply_scenario_leo_satellite(sig, snr_db, fs=FS):
     """LEO satellite: Iridium, NOAA APT, COSPAS-SARSAT."""
     mfo = _config.max_freq_offset
-    # Large Doppler shift/rate from LEO pass
-    doppler_rate = np.random.uniform(10, 100)  # Hz/s
+    doppler_rate = np.random.uniform(10, 100)
     sig = apply_doppler_rate(sig, doppler_rate, fs)
-    # Free-space path loss variation (slow amplitude fading)
     if np.random.random() < 0.4:
         sig = apply_qsb(sig, fs)
-    # Scintillation (ionospheric)
     if np.random.random() < 0.3:
         sig = apply_rician(sig, fs, k_db=np.random.uniform(5, 15))
     sig = freq_shift(sig, np.random.uniform(-mfo * 2, mfo * 2), fs)
@@ -416,32 +432,30 @@ def _apply_scenario_leo_satellite(sig, snr_db, fs=FS):
         sig = apply_phase_noise(sig, fs)
     if np.random.random() < 0.2:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 1.0}]
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
 def _apply_scenario_automotive(sig, snr_db, fs=FS):
     """Automotive: TPMS, BLE beacon, V2X."""
     mfo = _config.max_freq_offset
-    # Rayleigh with high Doppler (100-500 Hz for highway speeds)
-    doppler = np.random.uniform(100, 500)
     sig = apply_rician(sig, fs, k_db=np.random.uniform(-5, 3))
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
-    # Ignition impulse noise
-    if np.random.random() < 0.4:
-        sig = apply_impulse_noise(sig, fs)
     if np.random.random() < 0.3:
         sig = apply_iq_imbalance(sig)
     if np.random.random() < 0.2:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 3.0}]
+    if np.random.random() < 0.4:
+        sources.append({"type": "impulse", "weight": 1.0})
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
 def _apply_scenario_urban_cellular(sig, snr_db, fs=FS):
     """Urban cellular: GSM, LTE, 5G NR."""
     mfo = _config.max_freq_offset
-    # ITU Pedestrian or Vehicular delay profile
     profile = np.random.choice(["ped_a", "ped_b", "veh_a"])
     if profile == "ped_a":
         delays = [0, 110e-9, 190e-9, 410e-9]
@@ -458,21 +472,20 @@ def _apply_scenario_urban_cellular(sig, snr_db, fs=FS):
 
     sig = apply_tapped_delay_line(sig, delays, powers, doppler, fs)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
-    # Co-channel interference
-    if np.random.random() < 0.3:
-        sig = apply_adjacent_signal(sig, fs)
     if np.random.random() < 0.2:
         sig = apply_iq_imbalance(sig)
     if np.random.random() < 0.2:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 3.0}]
+    if np.random.random() < 0.3:
+        sources.append({"type": "adjacent", "weight": 1.0})
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
 def _apply_scenario_radar_clutter(sig, snr_db, fs=FS):
     """Radar clutter: all radar types."""
     mfo = _config.max_freq_offset
-    # Ground/sea clutter
     clutter_type = np.random.choice(["gaussian", "weibull", "k"])
     scr_db = np.random.uniform(5, 25)
     sig = apply_clutter(sig, clutter_type, scr_db, fs)
@@ -481,32 +494,33 @@ def _apply_scenario_radar_clutter(sig, snr_db, fs=FS):
         sig = apply_phase_noise(sig, fs)
     if np.random.random() < 0.2:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 1.0}]
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
 def _apply_scenario_maritime(sig, snr_db, fs=FS):
     """Maritime: AIS, maritime VHF."""
     mfo = _config.max_freq_offset
-    # 2-ray sea-surface multipath
     delays = [0, np.random.uniform(0.5e-3, 5e-3)]
     powers = [0, np.random.uniform(-10, -3)]
     doppler = np.random.uniform(0.5, 5)
     sig = apply_tapped_delay_line(sig, delays, powers, doppler, fs)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
-    # High atmospheric noise (maritime environment)
-    if np.random.random() < 0.4:
-        sig = apply_atmospheric_noise(sig, fs)
     if np.random.random() < 0.2:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    sources = [{"type": "awgn", "weight": 3.0}]
+    if np.random.random() < 0.4:
+        sources.append({"type": "atmospheric", "weight": 1.0})
+    sig = apply_noise_budget(sig, snr_db, sources, fs)
     return normalize_power(sig)
 
 
 def _apply_scenario_ism_congested(sig, snr_db, fs=FS):
     """ISM congested: BLE, WiFi, Zigbee, LoRa."""
     mfo = _config.max_freq_offset
-    # Multi-source co-channel interference
+    # ISM interference is a co-channel model — measure ref power before adding it
+    ref_power = np.mean(np.abs(sig) ** 2)
     n_interferers = np.random.randint(1, 5)
     sig = apply_ism_interference(sig, n_interferers, fs)
     sig = freq_shift(sig, np.random.uniform(-mfo, mfo), fs)
@@ -514,7 +528,8 @@ def _apply_scenario_ism_congested(sig, snr_db, fs=FS):
         sig = apply_iq_imbalance(sig)
     if np.random.random() < 0.2:
         sig = apply_dc_offset(sig)
-    sig = add_awgn(sig, snr_db)
+    # Use ref_power so AWGN is calibrated to the original signal, not signal+interference
+    sig = add_awgn(sig, snr_db, ref_power=ref_power)
     return normalize_power(sig)
 
 
@@ -614,6 +629,7 @@ def apply_impairments(raw_windows, target_count, fs=FS, window_len=WINDOW_LEN,
 
     samples = np.zeros((target_count, window_len), dtype=dtype)
     scenarios = [] if return_metadata else None
+    snr_labels = [] if return_metadata else None
     snr_per = target_count // len(snr_levels)
     idx = 0
 
@@ -626,8 +642,9 @@ def apply_impairments(raw_windows, target_count, fs=FS, window_len=WINDOW_LEN,
             samples[idx] = impaired
             if scenarios is not None:
                 scenarios.append(scenario_name)
+                snr_labels.append(snr_db)
             idx += 1
 
     if return_metadata:
-        return samples, {"scenarios": scenarios}
+        return samples, {"scenarios": scenarios, "snrs": snr_labels}
     return samples

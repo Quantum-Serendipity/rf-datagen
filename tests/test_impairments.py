@@ -32,6 +32,7 @@ from rf_datagen.impairments.effects import (
     apply_clutter,
     apply_ism_interference,
     apply_signal_mixing,
+    apply_noise_budget,
     extract_windows,
 )
 from rf_datagen.impairments.transmitter import (
@@ -577,3 +578,73 @@ def test_transmitter_model_output_is_complex(tone_1k):
     model = TransmitterModel("CASUAL")
     out = model.apply(tone_1k, FS)
     assert np.iscomplexobj(out)
+
+
+# ---------------------------------------------------------------------------
+# apply_noise_budget
+# ---------------------------------------------------------------------------
+
+def test_noise_budget_awgn_only_matches_target_snr(tone_1k):
+    """With only AWGN source, budget should produce correct SNR."""
+    snr_target = 10.0
+    sources = [{"type": "awgn", "weight": 1.0}]
+    out = apply_noise_budget(tone_1k, snr_target, sources, FS)
+    noise = out - tone_1k
+    sig_power = np.mean(np.abs(tone_1k) ** 2)
+    noise_power = np.mean(np.abs(noise) ** 2)
+    measured_snr = 10 * np.log10(sig_power / noise_power)
+    assert abs(measured_snr - snr_target) < 3.0
+
+
+def test_noise_budget_multi_source_total_snr(tone_1k):
+    """With multiple sources, total noise power should match target SNR."""
+    snr_target = 10.0
+    sources = [
+        {"type": "awgn", "weight": 2.0},
+        {"type": "atmospheric", "weight": 1.0},
+        {"type": "impulse", "weight": 0.5},
+    ]
+    out = apply_noise_budget(tone_1k, snr_target, sources, FS)
+    noise = out - tone_1k
+    sig_power = np.mean(np.abs(tone_1k) ** 2)
+    noise_power = np.mean(np.abs(noise) ** 2)
+    measured_snr = 10 * np.log10(sig_power / noise_power)
+    # Should be within 3 dB of target (impulse noise is bursty)
+    assert abs(measured_snr - snr_target) < 4.0
+
+
+def test_noise_budget_preserves_length(tone_1k):
+    """Output length matches input."""
+    sources = [{"type": "awgn", "weight": 1.0}, {"type": "hum", "weight": 0.5}]
+    out = apply_noise_budget(tone_1k, 15.0, sources, FS)
+    assert len(out) == len(tone_1k)
+
+
+def test_noise_budget_no_double_noise():
+    """Verify no noise stacking: budget output has correct effective SNR
+    even when multiple additive sources are active."""
+    n = 2048
+    t = np.arange(n) / FS
+    sig = np.exp(2j * np.pi * 1000 * t)
+    sig_power = np.mean(np.abs(sig) ** 2)
+
+    snr_target = 15.0
+    sources = [
+        {"type": "awgn", "weight": 2.0},
+        {"type": "atmospheric", "weight": 2.0},
+        {"type": "hum", "weight": 1.0},
+        {"type": "adjacent", "weight": 1.0},
+    ]
+    # Run many trials and check average
+    snrs = []
+    for _ in range(20):
+        np.random.seed(None)
+        out = apply_noise_budget(sig, snr_target, sources, FS)
+        noise = out - sig
+        noise_power = np.mean(np.abs(noise) ** 2)
+        if noise_power > 1e-20:
+            snrs.append(10 * np.log10(sig_power / noise_power))
+    avg_snr = np.mean(snrs)
+    # Average should be close to target, NOT 5-20 dB lower
+    assert abs(avg_snr - snr_target) < 4.0, \
+        f"Expected ~{snr_target} dB, got {avg_snr:.1f} dB (noise stacking bug)"

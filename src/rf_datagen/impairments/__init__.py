@@ -13,6 +13,7 @@ from .effects import (
     apply_time_mask, apply_freq_mask,
     apply_doppler_rate, apply_tapped_delay_line,
     apply_clutter, apply_ism_interference,
+    apply_noise_budget,
     extract_windows,
 )
 from .transmitter import TransmitterModel
@@ -29,6 +30,7 @@ __all__ = [
     "apply_qsb", "apply_atmospheric_noise",
     "apply_doppler_rate", "apply_tapped_delay_line",
     "apply_clutter", "apply_ism_interference",
+    "apply_noise_budget",
     "apply_scenario", "apply_scenario_continuous", "apply_impairments",
     "configure_impairments",
     "extract_windows", "TransmitterModel",

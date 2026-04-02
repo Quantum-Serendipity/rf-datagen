@@ -66,15 +66,178 @@ def _fading_tap(n, doppler_hz, fs):
     return filtered / pwr if pwr > 1e-10 else filtered
 
 
-def add_awgn(sig, snr_db):
-    """Add complex AWGN at specified SNR (dB)."""
-    sig_power = np.mean(np.abs(sig) ** 2)
-    if sig_power < 1e-20:
-        sig_power = 1.0
-    noise_power = sig_power * 10 ** (-snr_db / 10)
+def add_awgn(sig, snr_db, ref_power=None):
+    """Add complex AWGN at specified SNR (dB).
+
+    Args:
+        sig: Input signal.
+        snr_db: Target SNR in dB.
+        ref_power: Reference signal power for SNR calculation.
+            If None, measures from sig (legacy behavior).
+    """
+    if ref_power is None:
+        ref_power = np.mean(np.abs(sig) ** 2)
+    if ref_power < 1e-20:
+        ref_power = 1.0
+    noise_power = ref_power * 10 ** (-snr_db / 10)
     noise = np.sqrt(noise_power / 2) * (
         np.random.randn(len(sig)) + 1j * np.random.randn(len(sig)))
     return sig + noise
+
+
+def apply_noise_budget(sig, snr_db, sources, fs=FS):
+    """Apply additive noise sources within a total noise power budget.
+
+    Computes total noise power from target SNR, then partitions it across
+    all active additive noise sources so that the *effective* SNR matches
+    the labeled SNR.
+
+    Args:
+        sig: Input signal (after multiplicative impairments only).
+        snr_db: Target SNR in dB (defines total noise power budget).
+        sources: List of noise source specs, each a dict with:
+            - "type": one of "awgn", "atmospheric", "impulse",
+                      "adjacent", "hum"
+            - "weight": relative fraction of noise budget (default 1.0)
+            - "params": dict of extra params passed to the noise function
+        fs: Sample rate.
+
+    Returns:
+        Signal with all additive noise sources applied within budget.
+    """
+    sig_power = np.mean(np.abs(sig) ** 2)
+    if sig_power < 1e-20:
+        sig_power = 1.0
+
+    total_noise_power = sig_power * 10 ** (-snr_db / 10)
+
+    # Compute weights and normalize
+    weights = np.array([s.get("weight", 1.0) for s in sources], dtype=float)
+    weight_sum = weights.sum()
+    if weight_sum < 1e-10:
+        return sig
+    weights /= weight_sum
+
+    result = sig.copy()
+    n = len(sig)
+
+    for src, w in zip(sources, weights):
+        src_power = total_noise_power * w
+        if src_power < 1e-30:
+            continue
+
+        src_type = src["type"]
+        params = src.get("params", {})
+
+        if src_type == "awgn":
+            noise = np.sqrt(src_power / 2) * (
+                np.random.randn(n) + 1j * np.random.randn(n))
+            result += noise
+
+        elif src_type == "atmospheric":
+            result = _apply_atmospheric_budgeted(
+                result, src_power, fs, **params)
+
+        elif src_type == "impulse":
+            result = _apply_impulse_budgeted(
+                result, src_power, fs, **params)
+
+        elif src_type == "adjacent":
+            result = _apply_adjacent_budgeted(
+                result, src_power, fs, **params)
+
+        elif src_type == "hum":
+            result = _apply_hum_budgeted(
+                result, src_power, fs, **params)
+
+        else:
+            log.warning("Unknown noise source type: %s", src_type)
+
+    return result
+
+
+def _apply_atmospheric_budgeted(sig, target_power, fs=FS, alpha=None):
+    """Atmospheric noise scaled to a specific target power."""
+    n = len(sig)
+    if alpha is None:
+        alpha = np.random.uniform(0.5, 1.5)
+    freqs = np.fft.fftfreq(n, 1.0 / fs)
+    freqs[0] = 1.0
+    spectral_shape = 1.0 / np.abs(freqs) ** (alpha / 2)
+    spectral_shape[0] = 0.0
+    white = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
+    colored = np.fft.ifft(np.fft.fft(white) * spectral_shape)
+    pwr = np.sqrt(np.mean(np.abs(colored) ** 2))
+    if pwr > 1e-10:
+        colored /= pwr
+    noise = 0.7 * colored + 0.3 * white
+    # Scale to target power
+    noise_pwr = np.mean(np.abs(noise) ** 2)
+    if noise_pwr > 1e-20:
+        noise *= np.sqrt(target_power / noise_pwr)
+    return sig + noise
+
+
+def _apply_impulse_budgeted(sig, target_power, fs=FS, n_bursts=None):
+    """Impulse noise scaled to a specific target power."""
+    n = len(sig)
+    if n_bursts is None:
+        n_bursts = np.random.randint(1, 6)
+    # Generate impulse noise into a separate array
+    impulse = np.zeros(n, dtype=np.complex128)
+    for _ in range(n_bursts):
+        dur = np.random.randint(max(1, int(0.0001 * fs)),
+                                max(2, int(0.002 * fs)))
+        start = np.random.randint(0, max(1, n - dur))
+        burst = (np.random.randn(dur)
+                 + 1j * np.random.randn(dur)) / np.sqrt(2)
+        impulse[start:start + dur] += burst
+    # Scale to target power
+    imp_pwr = np.mean(np.abs(impulse) ** 2)
+    if imp_pwr > 1e-20:
+        impulse *= np.sqrt(target_power / imp_pwr)
+    return sig + impulse
+
+
+def _apply_adjacent_budgeted(sig, target_power, fs=FS, offset_hz=None):
+    """Adjacent-channel interference scaled to a specific target power."""
+    n = len(sig)
+    if offset_hz is None:
+        offset_hz = np.random.choice([-1, 1]) * np.random.uniform(500, 2500)
+    t = np.arange(n) / fs
+    if np.random.random() < 0.5:
+        adj = np.exp(2j * np.pi * offset_hz * t)
+    else:
+        bw = np.random.uniform(50, 200)
+        noise = (np.random.randn(n) + 1j * np.random.randn(n)) / np.sqrt(2)
+        freqs = np.fft.fftfreq(n, 1.0 / fs)
+        mask = np.exp(-0.5 * ((freqs - offset_hz) / (bw / 2)) ** 2)
+        adj = np.fft.ifft(np.fft.fft(noise) * mask)
+    # Scale to target power
+    adj_pwr = np.mean(np.abs(adj) ** 2)
+    if adj_pwr > 1e-20:
+        adj *= np.sqrt(target_power / adj_pwr)
+    return sig + adj
+
+
+def _apply_hum_budgeted(sig, target_power, fs=FS, comb_hz=None):
+    """Powerline hum scaled to a specific target power."""
+    n = len(sig)
+    if comb_hz is None:
+        comb_hz = np.random.choice([100, 120])
+    t = np.arange(n) / fs
+    n_harmonics = int(fs / 2 / comb_hz)
+    hum = np.zeros(n, dtype=np.complex128)
+    for k in range(1, n_harmonics + 1):
+        freq = k * comb_hz
+        amp = 1.0 / np.sqrt(k)
+        phase = np.random.uniform(0, 2 * np.pi)
+        hum += amp * np.exp(2j * np.pi * freq * t + 1j * phase)
+    # Scale to target power
+    hum_pwr = np.mean(np.abs(hum) ** 2)
+    if hum_pwr > 1e-20:
+        hum *= np.sqrt(target_power / hum_pwr)
+    return sig + hum
 
 
 def freq_shift(sig, offset_hz, fs=FS):

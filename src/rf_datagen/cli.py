@@ -212,7 +212,7 @@ def cmd_generate(args):
             prefix = "rf_datagen"
 
         log.info("Assembling %s dataset...", domain_name)
-        iq_data, tags, scenarios = assemble_parts(
+        iq_data, tags, scenarios, snrs = assemble_parts(
             domain_dir,
             window_len=domain.window_length,
             labels=domain_labels)
@@ -225,7 +225,8 @@ def cmd_generate(args):
         dw = _diversity_check(iq_data, tags)
         all_diversity_warnings.extend(dw)
 
-        save_dataset(iq_data, tags, scenarios, domain_dir, prefix=prefix)
+        save_dataset(iq_data, tags, scenarios, domain_dir, prefix=prefix,
+                     snrs=snrs)
 
         iq_path = os.path.join(domain_dir, f"{prefix}_iq.npy")
         if os.path.exists(iq_path):

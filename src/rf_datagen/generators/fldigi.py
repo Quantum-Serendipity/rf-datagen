@@ -418,8 +418,13 @@ class FldigiGenerator(BaseGenerator):
                         window_len=self.window_len,
                         return_metadata=True)
                     atomic_save_npy(npy_path, samples)
-                    atomic_write_csv(meta_path, ["scenario"],
-                                     [[s] for s in meta["scenarios"]])
+                    snrs = meta.get("snrs", [])
+                    meta_rows = []
+                    for i, s in enumerate(meta["scenarios"]):
+                        snr = snrs[i] if i < len(snrs) else ""
+                        meta_rows.append([s, snr])
+                    atomic_write_csv(meta_path, ["scenario", "snr"],
+                                     meta_rows)
                     self._write_hash(hash_path, cfg_hash)
                     log.info("%15s: %d raw -> %d samples",
                              mode_name, len(raw_windows), len(samples))
