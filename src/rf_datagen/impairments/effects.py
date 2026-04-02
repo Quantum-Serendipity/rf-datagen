@@ -34,9 +34,12 @@ def _jakes_spectrum(n, doppler_hz, fs):
     """Compute normalized Jakes Doppler spectrum filter.
 
     Returns a frequency-domain filter array of length n.  If doppler_hz
-    is too small, returns None (caller should use flat fading).
+    is too small relative to the FFT resolution, returns None (caller
+    should use flat fading — physically correct for slow fading within
+    a short observation window).
     """
-    if doppler_hz < 0.01:
+    bin_hz = fs / n
+    if doppler_hz < 0.01 or doppler_hz < bin_hz:
         return None
     freqs = np.fft.fftfreq(n, 1.0 / fs)
     with np.errstate(divide='ignore', invalid='ignore'):
