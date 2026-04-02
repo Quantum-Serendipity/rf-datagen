@@ -311,8 +311,14 @@ class FldigiGenerator(BaseGenerator):
         raise NotImplementedError("Use run() for fldigi generation")
 
     def run(self, output_dir, seed=42, port=7362):
+        """Sequential mode generation: one mode at a time, checkpoint after each.
+
+        Uses a single fldigi instance to avoid multi-thread crash risk.
+        A crash loses at most the current in-flight mode; all completed
+        modes are already saved and will be skipped on restart.
+        """
         import tempfile
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .._state import shutdown_requested
 
         # Pre-flight: skip entirely if all modes cached
         # (avoids starting PulseAudio + fldigi instances for nothing)
@@ -331,100 +337,99 @@ class FldigiGenerator(BaseGenerator):
         if not classes:
             return all_results
 
-        n_workers = max(1, self.config.workers or os.cpu_count() or 1)
-        n_workers = min(n_workers, len(classes))
-
-        log.info("fldigi: %d modes, %d instances", len(classes), n_workers)
-
-        tmpdir = tempfile.mkdtemp(prefix="fldigi_gen_")
-        instances = []
         stride = self.impairment_config.effective_stride(self.window_len)
         power_threshold = self.impairment_config.window_power_threshold
+
+        log.info("fldigi: %d modes, 1 instance (sequential)", len(classes))
+
+        tmpdir = tempfile.mkdtemp(prefix="fldigi_gen_")
+        inst = None
 
         try:
             with IsolatedPulseServer() as pa:
                 pa_env = pa.clean_env()
-                for i in range(n_workers):
-                    inst = FLDigiInstance(i, port + i, tmpdir, pa_env)
-                    inst.start()
-                    instances.append(inst)
-                    try:
-                        if inst.fldigi_proc:
-                            pid_registry.register_child(
-                                inst.fldigi_proc.pid, "fldigi",
-                                port=port + i, config_dir=inst.config_dir)
-                    except Exception:
-                        pass
+                inst = FLDigiInstance(0, port, tmpdir, pa_env)
+                inst.start()
+                try:
+                    if inst.fldigi_proc:
+                        pid_registry.register_child(
+                            inst.fldigi_proc.pid, "fldigi",
+                            port=port, config_dir=inst.config_dir)
+                except Exception:
+                    pass
 
-                mode_groups = [[] for _ in range(n_workers)]
-                for i, mode in enumerate(classes):
-                    mode_groups[i % n_workers].append(mode)
+                for mode_name in classes:
+                    if shutdown_requested():
+                        log.warning("Shutdown requested — stopping fldigi "
+                                    "after %d/%d modes",
+                                    len(all_results), len(classes))
+                        break
 
-                def worker_fn(inst, modes):
-                    results = {}
-                    for mode_name in modes:
-                        npy_path = os.path.join(parts_dir, f"{mode_name}.npy")
-                        meta_path = os.path.join(parts_dir, f"{mode_name}_meta.csv")
-                        hash_path = os.path.join(parts_dir, f"{mode_name}.hash")
-                        n_samples = self._boosted_count(mode_name)
-                        cfg_hash = self._config_hash(mode_name, n_samples)
-                        if self._check_checkpoint(npy_path, meta_path,
-                                                  hash_path, n_samples,
-                                                  cfg_hash):
-                            log.info("%15s: cached", mode_name)
-                            results[mode_name] = {"status": "cached",
+                    npy_path = os.path.join(parts_dir, f"{mode_name}.npy")
+                    meta_path = os.path.join(parts_dir,
+                                             f"{mode_name}_meta.csv")
+                    hash_path = os.path.join(parts_dir, f"{mode_name}.hash")
+                    n_samples = self._boosted_count(mode_name)
+                    cfg_hash = self._config_hash(mode_name, n_samples)
+
+                    if self._check_checkpoint(npy_path, meta_path,
+                                              hash_path, n_samples,
+                                              cfg_hash):
+                        log.info("%15s: cached", mode_name)
+                        all_results[mode_name] = {"status": "cached",
                                                   "samples": n_samples}
-                            continue
+                        continue
 
-                        cps = MODE_CHARS_PER_SEC.get(mode_name, 5)
-                        est_chars = int(n_samples * (self.window_len / self.fs) / 2 * cps * 1.5)
-                        text = get_text_for_mode(mode_name, max(500, est_chars))
-                        mode_deadline = time.time() + MODE_TIMEOUT
-                        iq = inst.generate_mode(mode_name, text,
-                                                target_fs=self.fs,
-                                                deadline=mode_deadline)
-                        if len(iq) < self.window_len:
-                            log.warning("%15s: FAILED (signal too short)",
-                                        mode_name)
-                            results[mode_name] = {"status": "failed",
-                                                  "reason": "signal too short"}
-                            continue
-                        raw_windows = extract_windows(
-                            iq, window_len=self.window_len,
-                            stride=stride,
-                            power_threshold=power_threshold)
-                        if len(raw_windows) == 0:
-                            results[mode_name] = {"status": "failed",
-                                                  "reason": "no valid windows"}
-                            continue
-                        samples, meta = apply_impairments(
-                            raw_windows, n_samples, fs=self.fs,
-                            window_len=self.window_len, return_metadata=True)
-                        atomic_save_npy(npy_path, samples)
-                        atomic_write_csv(meta_path, ["scenario"],
-                                         [[s] for s in meta["scenarios"]])
-                        self._write_hash(hash_path, cfg_hash)
-                        log.info("%15s: %d raw -> %d samples",
-                                 mode_name, len(raw_windows), len(samples))
-                        results[mode_name] = {"status": "ok",
-                                              "samples": len(samples),
-                                              "raw_windows": len(raw_windows)}
-                    return results
+                    cps = MODE_CHARS_PER_SEC.get(mode_name, 5)
+                    est_chars = int(
+                        n_samples * (self.window_len / self.fs)
+                        / 2 * cps * 1.5)
+                    text = get_text_for_mode(mode_name, max(500, est_chars))
+                    mode_deadline = time.time() + MODE_TIMEOUT
 
-                if n_workers == 1:
-                    all_results.update(worker_fn(instances[0], classes))
-                else:
-                    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                        futures = {
-                            pool.submit(worker_fn, inst, modes): i
-                            for i, (inst, modes) in enumerate(
-                                zip(instances, mode_groups))
-                        }
-                        for future in as_completed(futures):
-                            all_results.update(future.result())
+                    # Restart instance if it died between modes
+                    if not inst._is_alive():
+                        log.warning("fldigi instance died, restarting")
+                        inst._restart()
+
+                    iq = inst.generate_mode(mode_name, text,
+                                            target_fs=self.fs,
+                                            deadline=mode_deadline)
+                    if len(iq) < self.window_len:
+                        log.warning("%15s: FAILED (signal too short)",
+                                    mode_name)
+                        all_results[mode_name] = {
+                            "status": "failed",
+                            "reason": "signal too short"}
+                        continue
+
+                    raw_windows = extract_windows(
+                        iq, window_len=self.window_len,
+                        stride=stride,
+                        power_threshold=power_threshold)
+                    if len(raw_windows) == 0:
+                        all_results[mode_name] = {
+                            "status": "failed",
+                            "reason": "no valid windows"}
+                        continue
+
+                    samples, meta = apply_impairments(
+                        raw_windows, n_samples, fs=self.fs,
+                        window_len=self.window_len,
+                        return_metadata=True)
+                    atomic_save_npy(npy_path, samples)
+                    atomic_write_csv(meta_path, ["scenario"],
+                                     [[s] for s in meta["scenarios"]])
+                    self._write_hash(hash_path, cfg_hash)
+                    log.info("%15s: %d raw -> %d samples",
+                             mode_name, len(raw_windows), len(samples))
+                    all_results[mode_name] = {
+                        "status": "ok",
+                        "samples": len(samples),
+                        "raw_windows": len(raw_windows)}
 
         finally:
-            for inst in instances:
+            if inst is not None:
                 try:
                     if inst.fldigi_proc:
                         pid_registry.unregister_child(inst.fldigi_proc.pid)
