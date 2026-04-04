@@ -24,8 +24,9 @@ from .base import BaseGenerator
 log = get_logger("fldigi")
 
 CAPTURE_FS = 48000
-MODE_TIMEOUT = 900  # 15 minutes max per mode before giving up
+MODE_TIMEOUT_MIN = 900  # floor: at least 15 minutes per mode
 MAX_CHUNK_TIMEOUT = 120  # 2 minutes max waiting for a single TX chunk
+CHUNK_CHARS = 500  # characters per TX chunk
 
 MODE_CHARS_PER_SEC = {
     "PSK31": 5, "PSK63": 10, "RTTY": 8, "OLIVIA": 3,
@@ -244,7 +245,6 @@ class FLDigiInstance:
         return raw_data[start:end]
 
     def generate_mode(self, mode_name, text, target_fs=FS, deadline=None):
-        CHUNK_CHARS = 500
         MAX_RETRIES = 3
         modem_variants = FLDIGI_MODES[mode_name]
         cadence = TypingCadenceModel()
@@ -332,7 +332,11 @@ class FldigiGenerator(BaseGenerator):
         est_chars = int(
             n_samples * (self.window_len / self.fs) / 2 * cps * 1.5)
         text = get_text_for_mode(mode_name, max(500, est_chars))
-        mode_deadline = time.time() + MODE_TIMEOUT
+        n_chunks = max(1, len(text) // CHUNK_CHARS)
+        mode_timeout = max(MODE_TIMEOUT_MIN, n_chunks * MAX_CHUNK_TIMEOUT)
+        log.info("%15s: %d chars, %d chunks, timeout %ds",
+                 mode_name, len(text), n_chunks, mode_timeout)
+        mode_deadline = time.time() + mode_timeout
 
         if not inst._is_alive():
             log.warning("fldigi instance %d died, restarting", inst.id)
