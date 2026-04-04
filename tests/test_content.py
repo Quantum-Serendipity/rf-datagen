@@ -1,5 +1,7 @@
 """Unit tests for rf_datagen.content modules (ham_text, typing, images)."""
 
+import re
+
 from rf_datagen.content.ham_text import (
     gen_contest_qso,
     get_text_for_mode,
@@ -7,6 +9,7 @@ from rf_datagen.content.ham_text import (
     gen_ft8_message,
     gen_wspr_message,
     gen_packet_content,
+    gen_callsign,
     CALLSIGNS,
 )
 from rf_datagen.content.typing import (
@@ -28,7 +31,14 @@ def test_contest_qso_returns_string():
 
 def test_contest_qso_contains_callsign():
     qso = gen_contest_qso()
-    assert any(call in qso for call in CALLSIGNS)
+    # Procedural callsigns follow DE <CALLSIGN> pattern
+    assert re.search(r"DE [A-Z0-9]{2,8}", qso)
+
+
+def test_gen_callsign_format():
+    for _ in range(50):
+        call = gen_callsign()
+        assert re.match(r"^[A-Z0-9]{2,8}$", call), f"Bad callsign: {call}"
 
 
 def test_get_text_reaches_target_length():
