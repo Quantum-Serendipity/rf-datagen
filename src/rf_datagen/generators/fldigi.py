@@ -191,6 +191,9 @@ class FLDigiInstance:
                 stdout=audio_fd, env=self._make_env(),
             )
             time.sleep(0.3)
+            if rec_proc.poll() is not None:
+                log.error("parec exited immediately — PulseAudio may be dead")
+                return np.array([], dtype=np.int16)
             self.server.text.clear_tx()
             if cadence is not None:
                 feed_characters_with_cadence(self.server, chunk_text, cadence)
@@ -203,6 +206,9 @@ class FLDigiInstance:
             deadline = time.time() + est_secs
             tx_started = False
             while time.time() < deadline:
+                if rec_proc.poll() is not None:
+                    log.error("parec died during TX — PulseAudio may be dead")
+                    break
                 try:
                     state = self.server.main.get_trx_state()
                     if state == "TX":
@@ -250,13 +256,20 @@ class FLDigiInstance:
         cadence = TypingCadenceModel()
         chunks = [text[i:i + CHUNK_CHARS] for i in range(0, len(text), CHUNK_CHARS)]
         all_audio = []
+        consecutive_failures = 0
         for ci, chunk in enumerate(chunks):
             if deadline and time.time() > deadline:
                 log.warning("%s: mode timeout at chunk %d/%d, "
                             "using %d chunks captured so far",
                             mode_name, ci, len(chunks), len(all_audio))
                 break
+            if consecutive_failures >= 5:
+                log.error("%s: %d consecutive chunk failures, aborting mode "
+                          "(PulseAudio may be dead)",
+                          mode_name, consecutive_failures)
+                break
             modem_name = modem_variants[ci % len(modem_variants)]
+            chunk_ok = False
             for attempt in range(MAX_RETRIES):
                 if not self._is_alive():
                     log.debug("fldigi instance %d restarting", self.id)
@@ -273,11 +286,16 @@ class FLDigiInstance:
                 raw = self._tx_chunk(mode_name, chunk, cadence=cadence)
                 if len(raw) > 0:
                     all_audio.append(raw)
+                    chunk_ok = True
                     break
                 elif not self._is_alive():
                     continue
                 else:
                     break
+            if chunk_ok:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
         if not all_audio:
             return np.array([], dtype=np.complex128)
         combined = np.concatenate(all_audio)
