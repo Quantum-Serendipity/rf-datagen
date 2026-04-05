@@ -150,6 +150,8 @@ def cmd_generate(args):
     enabled_domains = cfg.dataset.domains
 
     try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         for domain_name in enabled_domains:
             domain = DOMAINS[domain_name]
             domain_labels = set(labels_for_domain(domain_name))
@@ -160,32 +162,44 @@ def cmd_generate(args):
             else:
                 domain_dir = output_dir
 
+            # Build list of generators to run for this domain
+            domain_tasks = []
             for name, gen in plan:
-                if _state.shutdown_requested():
-                    log.warning("Shutdown requested — skipping %s", name)
-                    break
-
-                # Filter generator classes to this domain
                 domain_classes = [c for c in gen.signal_classes
                                   if c in domain_labels]
                 if not domain_classes:
                     continue
-
-                # Create a domain-specific generator instance
                 gen_cfg = cfg.generators[name]
                 domain_gen = GENERATORS[name](
                     gen_cfg, cfg.impairments,
                     fs=domain.sample_rate,
                     window_len=domain.window_length)
-                # Override signal_classes to domain subset
                 domain_gen.signal_classes = domain_classes
+                domain_tasks.append((name, domain_gen))
 
+            # Run all generators concurrently so slow generators
+            # (e.g. fldigi finishing last 2 modes) don't block others.
+            def _run_generator(task):
+                name, domain_gen = task
+                if _state.shutdown_requested():
+                    log.warning("Shutdown requested — skipping %s", name)
+                    return {}
                 log.info("[%s] %s: %d classes",
-                         domain_name, name, len(domain_classes))
-                gen_results = domain_gen.run(domain_dir,
-                                             seed=cfg.dataset.seed)
-                if gen_results:
-                    all_results.update(gen_results)
+                         domain_name, name, len(domain_gen.signal_classes))
+                return domain_gen.run(domain_dir,
+                                      seed=cfg.dataset.seed) or {}
+
+            with ThreadPoolExecutor(
+                    max_workers=len(domain_tasks)) as gen_pool:
+                futures = {gen_pool.submit(_run_generator, t): t[0]
+                           for t in domain_tasks}
+                for future in as_completed(futures):
+                    gen_name = futures[future]
+                    try:
+                        gen_results = future.result()
+                        all_results.update(gen_results)
+                    except Exception as e:
+                        log.error("Generator %s failed: %s", gen_name, e)
     finally:
         signal.signal(signal.SIGINT, prev_sigint)
         signal.signal(signal.SIGTERM, prev_sigterm)
