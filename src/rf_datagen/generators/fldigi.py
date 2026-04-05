@@ -99,7 +99,7 @@ def feed_characters_with_cadence(server, text, cadence):
 
 
 class FLDigiInstance:
-    def __init__(self, instance_id, xmlrpc_port, work_dir, pa_env):
+    def __init__(self, instance_id, xmlrpc_port, work_dir, pa_env=None):
         self.id = instance_id
         self.port = xmlrpc_port
         self.work_dir = work_dir
@@ -107,6 +107,7 @@ class FLDigiInstance:
         self.audio_dir = os.path.join(work_dir, f"audio_{instance_id}")
         self.sink_name = "capture"
         self.pa_env = pa_env
+        self._own_pa = None  # per-instance PulseAudio server
         self.fldigi_proc = None
         self.server = None
 
@@ -132,6 +133,12 @@ class FLDigiInstance:
         os.makedirs(self.config_dir, exist_ok=True)
         os.makedirs(self.audio_dir, exist_ok=True)
         self._write_config()
+        # Each instance gets its own PulseAudio server so we don't
+        # overload a single PA daemon with many concurrent parec clients.
+        if self.pa_env is None:
+            self._own_pa = IsolatedPulseServer()
+            self._own_pa.__enter__()
+            self.pa_env = self._own_pa.clean_env()
         env = self._make_env()
         self.fldigi_proc = subprocess.Popen(
             ["xvfb-run", "-a", "fldigi",
@@ -318,6 +325,9 @@ class FLDigiInstance:
                 except (ProcessLookupError, PermissionError):
                     pass
                 self.fldigi_proc.wait()
+        if self._own_pa is not None:
+            self._own_pa.__exit__(None, None, None)
+            self._own_pa = None
 
 
 class FldigiGenerator(BaseGenerator):
@@ -445,60 +455,58 @@ class FldigiGenerator(BaseGenerator):
         instances = []
 
         try:
-            with IsolatedPulseServer() as pa:
-                pa_env = pa.clean_env()
+            # Each fldigi instance gets its own PulseAudio server
+            # (pa_env=None triggers per-instance PA in FLDigiInstance.start)
+            for i in range(n_workers):
+                inst = FLDigiInstance(i, port + i, tmpdir)
+                inst.start()
+                try:
+                    if inst.fldigi_proc:
+                        pid_registry.register_child(
+                            inst.fldigi_proc.pid, "fldigi",
+                            port=port + i,
+                            config_dir=inst.config_dir)
+                except Exception:
+                    pass
+                instances.append(inst)
 
-                # Start all fldigi instances
-                for i in range(n_workers):
-                    inst = FLDigiInstance(i, port + i, tmpdir, pa_env)
-                    inst.start()
+            # Distribute modes round-robin across instances
+            mode_assignments = [[] for _ in range(n_workers)]
+            for idx, mode in enumerate(classes):
+                mode_assignments[idx % n_workers].append(mode)
+
+            # Limit concurrent post-processing to avoid OOM.
+            # TX phase is I/O-bound (typing sleeps) so all workers
+            # run in parallel, but only N do the memory-heavy
+            # windowing/impairments at once.
+            postproc_lock = threading.Semaphore(3)
+
+            def _worker(worker_id, inst, modes):
+                """Process assigned modes sequentially on one instance."""
+                results = {}
+                for mode_name in modes:
+                    if shutdown_requested():
+                        break
+                    name, result = self._generate_one_mode(
+                        mode_name, inst, parts_dir, stride,
+                        power_threshold, postproc_lock)
+                    results[name] = result
+                return results
+
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                futures = []
+                for i, inst in enumerate(instances):
+                    if mode_assignments[i]:
+                        futures.append(
+                            pool.submit(_worker, i, inst,
+                                        mode_assignments[i]))
+
+                for future in as_completed(futures):
                     try:
-                        if inst.fldigi_proc:
-                            pid_registry.register_child(
-                                inst.fldigi_proc.pid, "fldigi",
-                                port=port + i,
-                                config_dir=inst.config_dir)
-                    except Exception:
-                        pass
-                    instances.append(inst)
-
-                # Distribute modes round-robin across instances
-                mode_assignments = [[] for _ in range(n_workers)]
-                for idx, mode in enumerate(classes):
-                    mode_assignments[idx % n_workers].append(mode)
-
-                # Limit concurrent post-processing to avoid OOM.
-                # TX phase is I/O-bound (typing sleeps) so all workers
-                # run in parallel, but only N do the memory-heavy
-                # windowing/impairments at once.
-                postproc_lock = threading.Semaphore(3)
-
-                def _worker(worker_id, inst, modes):
-                    """Process assigned modes sequentially on one instance."""
-                    results = {}
-                    for mode_name in modes:
-                        if shutdown_requested():
-                            break
-                        name, result = self._generate_one_mode(
-                            mode_name, inst, parts_dir, stride,
-                            power_threshold, postproc_lock)
-                        results[name] = result
-                    return results
-
-                with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                    futures = []
-                    for i, inst in enumerate(instances):
-                        if mode_assignments[i]:
-                            futures.append(
-                                pool.submit(_worker, i, inst,
-                                            mode_assignments[i]))
-
-                    for future in as_completed(futures):
-                        try:
-                            worker_results = future.result()
-                            all_results.update(worker_results)
-                        except Exception as e:
-                            log.error("fldigi worker failed: %s", e)
+                        worker_results = future.result()
+                        all_results.update(worker_results)
+                    except Exception as e:
+                        log.error("fldigi worker failed: %s", e)
 
         finally:
             for inst in instances:
