@@ -28,6 +28,8 @@ CAPTURE_FS = 48000
 MODE_TIMEOUT_MIN = 900  # floor: at least 15 minutes per mode
 MAX_CHUNK_TIMEOUT = 120  # 2 minutes max waiting for a single TX chunk
 CHUNK_CHARS = 500  # characters per TX chunk
+CADENCE_SPEED = 100  # compress typing sleeps — fldigi modulates at its own
+                     # baud rate regardless of input timing
 
 MODE_CHARS_PER_SEC = {
     "PSK31": 5, "PSK63": 10, "RTTY": 8, "OLIVIA": 3,
@@ -69,7 +71,20 @@ FLDIGI_MODES = {
 }
 
 
-def feed_characters_with_cadence(server, text, cadence):
+def feed_characters_with_cadence(server, text, cadence,
+                                 speed=CADENCE_SPEED):
+    """Feed characters to fldigi with cadence-driven timing.
+
+    The speed multiplier compresses wall-clock sleeps without affecting
+    the modulated signal — fldigi's DSP runs at the mode's baud rate
+    regardless of input timing.  Cadence *patterns* (bursts, pauses,
+    typos) are preserved; only the dead time between keystrokes shrinks.
+    """
+    def _sleep(secs):
+        s = secs / speed
+        if s > 0.001:
+            time.sleep(s)
+
     if cadence.profile == 'copy_paste':
         pos = 0
         while pos < len(text):
@@ -82,20 +97,20 @@ def feed_characters_with_cadence(server, text, cadence):
             server.text.add_tx(chunk)
             pos += burst_len
             if pos < len(text):
-                time.sleep(cadence.pause_duration())
+                _sleep(cadence.pause_duration())
     else:
         for char in text:
             if cadence.should_typo() and char.isalpha():
                 wrong = chr(np.random.randint(ord('a'), ord('z') + 1))
                 server.text.add_tx(wrong)
-                time.sleep(cadence.char_delay() * 0.5)
+                _sleep(cadence.char_delay() * 0.5)
                 server.text.add_tx('\b')
-                time.sleep(cadence.char_delay())
+                _sleep(cadence.char_delay())
             server.text.add_tx(char)
             if cadence.should_pause(char):
-                time.sleep(cadence.pause_duration())
+                _sleep(cadence.pause_duration())
             else:
-                time.sleep(cadence.char_delay())
+                _sleep(cadence.char_delay())
 
 
 class FLDigiInstance:
