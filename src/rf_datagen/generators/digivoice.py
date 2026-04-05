@@ -259,9 +259,12 @@ class DigivoiceGenerator(BaseGenerator):
                     continue
 
                 combined = np.concatenate(mode_iq_segments)
+                del mode_iq_segments
                 raw_windows = extract_windows(
                     combined, window_len=self.window_len,
-                    stride=stride, power_threshold=power_threshold)
+                    stride=stride, power_threshold=power_threshold,
+                    max_windows=n_samples)
+                del combined
                 if len(raw_windows) == 0:
                     log.warning("%15s: FAILED (no valid windows)", mode_name)
                     results[mode_name] = {"status": "failed",

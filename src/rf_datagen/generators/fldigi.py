@@ -383,17 +383,17 @@ class FldigiGenerator(BaseGenerator):
             return mode_name, {"status": "failed",
                                "reason": "signal too short"}
 
+        n_samples = self._boosted_count(mode_name)
         raw_windows = extract_windows(
             iq, window_len=self.window_len, stride=stride,
-            power_threshold=power_threshold)
+            power_threshold=power_threshold,
+            max_windows=n_samples)
         del iq
 
         if len(raw_windows) == 0:
             log.warning("%15s: FAILED (no valid windows)", mode_name)
             return mode_name, {"status": "failed",
                                "reason": "no valid windows"}
-
-        n_samples = self._boosted_count(mode_name)
         samples, meta = apply_impairments(
             raw_windows, n_samples, fs=self.fs,
             window_len=self.window_len, return_metadata=True)

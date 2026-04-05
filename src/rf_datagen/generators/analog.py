@@ -158,9 +158,12 @@ class AnalogGenerator(BaseGenerator):
                     continue
 
                 combined_iq = np.concatenate(mode_iq_segments)
+                del mode_iq_segments
                 raw_windows = extract_windows(
                     combined_iq, window_len=self.window_len,
-                    stride=stride, power_threshold=power_threshold)
+                    stride=stride, power_threshold=power_threshold,
+                    max_windows=n_samples)
+                del combined_iq
                 if len(raw_windows) == 0:
                     log.warning("%15s: FAILED (no valid windows)", mode_name)
                     results[mode_name] = {"status": "failed",
