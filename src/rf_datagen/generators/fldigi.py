@@ -339,92 +339,86 @@ class FldigiGenerator(BaseGenerator):
         # This generator overrides run() for multi-instance orchestration
         raise NotImplementedError("Use run() for fldigi generation")
 
-    def _generate_one_mode(self, mode_name, inst, parts_dir, stride,
-                            power_threshold, postproc_lock=None):
-        """Generate a single mode using the given fldigi instance.
+    def _postprocess_mode(self, mode_name, raw_chunks, n_total_chunks,
+                          parts_dir, stride, power_threshold):
+        """Concatenate audio chunks, convert to IQ, window, impair, save.
 
-        Returns (mode_name, result_dict). Checkpoints atomically so that
-        a crash only loses the in-flight mode.  postproc_lock serialises
-        the memory-heavy windowing/impairment phase so at most one mode
-        holds large numpy arrays at a time.
+        Called when all TX chunks for a mode have been collected.
+        Returns (mode_name, result_dict).
         """
-        npy_path = os.path.join(parts_dir, f"{mode_name}.npy")
-        meta_path = os.path.join(parts_dir, f"{mode_name}_meta.csv")
-        hash_path = os.path.join(parts_dir, f"{mode_name}.hash")
-        n_samples = self._boosted_count(mode_name)
-        cfg_hash = self._config_hash(mode_name, n_samples)
+        valid = [a for a in raw_chunks if a is not None and len(a) > 0]
+        del raw_chunks
+        n_valid = len(valid)
 
-        if self._check_checkpoint(npy_path, meta_path, hash_path,
-                                  n_samples, cfg_hash):
-            log.info("%15s: cached", mode_name)
-            return mode_name, {"status": "cached", "samples": n_samples}
+        if not valid:
+            log.warning("%15s: FAILED (%d/%d chunks empty)",
+                        mode_name, n_total_chunks, n_total_chunks)
+            return mode_name, {"status": "failed", "reason": "no valid chunks"}
 
-        cps = MODE_CHARS_PER_SEC.get(mode_name, 5)
-        est_chars = int(
-            n_samples * (self.window_len / self.fs) / 2 * cps * 1.5)
-        text = get_text_for_mode(mode_name, max(500, est_chars))
-        n_chunks = max(1, len(text) // CHUNK_CHARS)
-        mode_timeout = max(MODE_TIMEOUT_MIN, n_chunks * MAX_CHUNK_TIMEOUT)
-        log.info("%15s: %d chars, %d chunks, timeout %ds",
-                 mode_name, len(text), n_chunks, mode_timeout)
-        mode_deadline = time.time() + mode_timeout
+        log.info("%15s: %d/%d chunks captured, post-processing...",
+                 mode_name, n_valid, n_total_chunks)
 
-        if not inst._is_alive():
-            log.warning("fldigi instance %d died, restarting", inst.id)
-            inst._restart()
+        combined = np.concatenate(valid)
+        del valid
+        iq = audio_to_iq(combined, CAPTURE_FS, target_fs=self.fs)
+        del combined
 
-        iq = inst.generate_mode(mode_name, text, target_fs=self.fs,
-                                deadline=mode_deadline)
         if len(iq) < self.window_len:
             log.warning("%15s: FAILED (signal too short)", mode_name)
             return mode_name, {"status": "failed",
                                "reason": "signal too short"}
 
-        # Serialise the memory-heavy post-processing so only one mode
-        # holds large numpy arrays at a time (prevents OOM thundering herd).
-        if postproc_lock is not None:
-            log.info("%15s: waiting for post-processing slot", mode_name)
-            postproc_lock.acquire()
-        try:
-            raw_windows = extract_windows(
-                iq, window_len=self.window_len, stride=stride,
-                power_threshold=power_threshold)
-            del iq  # free raw IQ before allocating impaired samples
-            if len(raw_windows) == 0:
-                return mode_name, {"status": "failed",
-                                   "reason": "no valid windows"}
+        raw_windows = extract_windows(
+            iq, window_len=self.window_len, stride=stride,
+            power_threshold=power_threshold)
+        del iq
 
-            samples, meta = apply_impairments(
-                raw_windows, n_samples, fs=self.fs,
-                window_len=self.window_len, return_metadata=True)
-            n_raw = len(raw_windows)
-            del raw_windows  # free before writing to disk
-            n_out = len(samples)
-            atomic_save_npy(npy_path, samples)
-            snrs = meta.get("snrs", [])
-            meta_rows = []
-            for i, s in enumerate(meta["scenarios"]):
-                snr = snrs[i] if i < len(snrs) else ""
-                meta_rows.append([s, snr])
-            atomic_write_csv(meta_path, ["scenario", "snr"], meta_rows)
-            del samples, meta  # free before releasing lock
-            self._write_hash(hash_path, cfg_hash)
-            log.info("%15s: %d raw -> %d samples",
-                     mode_name, n_raw, n_out)
-        finally:
-            if postproc_lock is not None:
-                postproc_lock.release()
+        if len(raw_windows) == 0:
+            log.warning("%15s: FAILED (no valid windows)", mode_name)
+            return mode_name, {"status": "failed",
+                               "reason": "no valid windows"}
+
+        n_samples = self._boosted_count(mode_name)
+        samples, meta = apply_impairments(
+            raw_windows, n_samples, fs=self.fs,
+            window_len=self.window_len, return_metadata=True)
+        n_raw = len(raw_windows)
+        del raw_windows
+        n_out = len(samples)
+
+        npy_path = os.path.join(parts_dir, f"{mode_name}.npy")
+        meta_path = os.path.join(parts_dir, f"{mode_name}_meta.csv")
+        hash_path = os.path.join(parts_dir, f"{mode_name}.hash")
+
+        atomic_save_npy(npy_path, samples)
+        snrs = meta.get("snrs", [])
+        meta_rows = []
+        for i, s in enumerate(meta["scenarios"]):
+            snr = snrs[i] if i < len(snrs) else ""
+            meta_rows.append([s, snr])
+        atomic_write_csv(meta_path, ["scenario", "snr"], meta_rows)
+        cfg_hash = self._config_hash(mode_name, n_samples)
+        self._write_hash(hash_path, cfg_hash)
+        del samples, meta
+
+        log.info("%15s: %d raw -> %d samples (from %d/%d chunks)",
+                 mode_name, n_raw, n_out, n_valid, n_total_chunks)
         return mode_name, {"status": "ok", "samples": n_out,
                            "raw_windows": n_raw}
 
     def run(self, output_dir, seed=42, port=7362):
-        """Parallel mode generation with per-mode checkpointing.
+        """Chunk-level parallel generation across all fldigi instances.
 
-        Launches N fldigi instances (from config workers, default 14).
-        Each instance processes modes assigned to it sequentially.
-        A crash loses at most N in-flight modes; all completed modes
-        are already checkpointed and will be skipped on restart.
+        Instead of assigning whole modes to instances 1:1, pre-splits every
+        uncached mode into TX chunks and feeds them through a shared work
+        queue.  All N instances pull chunks regardless of which mode they
+        belong to, so 2 remaining modes still saturate 21 instances.
+
+        Post-processing (windowing + impairments) runs in a small pool
+        (max 3 concurrent) to cap memory, and fires as soon as all chunks
+        for a mode are collected — overlapping with ongoing TX work.
         """
+        import queue
         import tempfile
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .._state import shutdown_requested
@@ -465,20 +459,69 @@ class FldigiGenerator(BaseGenerator):
             return all_results
 
         max_workers = self.config.workers or 14
-        n_workers = max(1, min(max_workers, len(uncached)))
 
         stride = self.impairment_config.effective_stride(self.window_len)
         power_threshold = self.impairment_config.window_power_threshold
 
-        log.info("fldigi: %d uncached modes, %d instances (parallel)",
-                 len(uncached), n_workers)
+        # --- Pre-split all uncached modes into chunk work items ---
+        mode_info = {}       # mode -> {n_chunks, n_samples}
+        per_mode_chunks = [] # list of lists, one per mode
+
+        for mode_name in uncached:
+            n_samples = self._boosted_count(mode_name)
+            cps = MODE_CHARS_PER_SEC.get(mode_name, 5)
+            est_chars = int(
+                n_samples * (self.window_len / self.fs) / 2 * cps * 1.5)
+            text = get_text_for_mode(mode_name, max(500, est_chars))
+            chunks = [text[i:i + CHUNK_CHARS]
+                      for i in range(0, len(text), CHUNK_CHARS)]
+            modem_variants = FLDIGI_MODES[mode_name]
+
+            mode_info[mode_name] = {
+                "n_chunks": len(chunks),
+                "n_samples": n_samples,
+            }
+
+            items = []
+            for ci, chunk_text in enumerate(chunks):
+                modem_name = modem_variants[ci % len(modem_variants)]
+                items.append((mode_name, ci, chunk_text, modem_name))
+            per_mode_chunks.append(items)
+
+        # Interleave chunks across modes so all modes make progress
+        # together: chunk 0 of each mode, then chunk 1 of each, etc.
+        work_queue = queue.Queue()
+        max_chunk_idx = max(len(mc) for mc in per_mode_chunks)
+        for ci in range(max_chunk_idx):
+            for mode_chunks in per_mode_chunks:
+                if ci < len(mode_chunks):
+                    work_queue.put(mode_chunks[ci])
+        del per_mode_chunks
+
+        total_chunks = work_queue.qsize()
+        n_workers = max(1, min(max_workers, total_chunks))
+
+        log.info("fldigi: %d uncached modes, %d chunks across %d instances",
+                 len(uncached), total_chunks, n_workers)
+        for mn in uncached:
+            log.info("  %15s: %d chunks, target %d samples",
+                     mn, mode_info[mn]["n_chunks"],
+                     mode_info[mn]["n_samples"])
+
+        # Per-mode audio collectors (thread-safe via audio_lock)
+        audio_lock = threading.Lock()
+        audio_slots = {m: [None] * mode_info[m]["n_chunks"]
+                       for m in uncached}
+        chunks_done = {m: 0 for m in uncached}
+        postproc_submitted = set()
+
+        # Thread-safe results collection
+        results_lock = threading.Lock()
 
         tmpdir = tempfile.mkdtemp(prefix="fldigi_gen_")
         instances = []
 
         try:
-            # Each fldigi instance gets its own PulseAudio server
-            # (pa_env=None triggers per-instance PA in FLDigiInstance.start)
             for i in range(n_workers):
                 inst = FLDigiInstance(i, port + i, tmpdir)
                 inst.start()
@@ -492,43 +535,134 @@ class FldigiGenerator(BaseGenerator):
                     pass
                 instances.append(inst)
 
-            # Distribute uncached modes round-robin across instances
-            mode_assignments = [[] for _ in range(n_workers)]
-            for idx, mode in enumerate(uncached):
-                mode_assignments[idx % n_workers].append(mode)
+            # Post-processing pool: max 3 concurrent to cap memory.
+            # Runs alongside TX — as soon as all chunks for a mode
+            # are collected, post-processing starts while other
+            # instances keep pulling TX chunks.
+            postproc_pool = ThreadPoolExecutor(max_workers=3)
+            postproc_futures = []
 
-            # Limit concurrent post-processing to avoid OOM.
-            # TX phase is I/O-bound (typing sleeps) so all workers
-            # run in parallel, but only N do the memory-heavy
-            # windowing/impairments at once.
-            postproc_lock = threading.Semaphore(3)
+            def _submit_postproc(mode_name):
+                """Submit post-processing if all chunks for mode are done."""
+                with audio_lock:
+                    if chunks_done[mode_name] < mode_info[mode_name]["n_chunks"]:
+                        return
+                    if mode_name in postproc_submitted:
+                        return
+                    postproc_submitted.add(mode_name)
+                    raw_chunks = audio_slots[mode_name]
+                    audio_slots[mode_name] = None  # free ref
 
-            def _worker(worker_id, inst, modes):
-                """Process assigned modes sequentially on one instance."""
-                results = {}
-                for mode_name in modes:
-                    if shutdown_requested():
-                        break
-                    name, result = self._generate_one_mode(
-                        mode_name, inst, parts_dir, stride,
-                        power_threshold, postproc_lock)
-                    results[name] = result
-                return results
+                n_total = mode_info[mode_name]["n_chunks"]
 
-            with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                futures = []
-                for i, inst in enumerate(instances):
-                    if mode_assignments[i]:
-                        futures.append(
-                            pool.submit(_worker, i, inst,
-                                        mode_assignments[i]))
+                def _do_postproc():
+                    name, result = self._postprocess_mode(
+                        mode_name, raw_chunks, n_total,
+                        parts_dir, stride, power_threshold)
+                    with results_lock:
+                        all_results[name] = result
 
-                for future in as_completed(futures):
+                f = postproc_pool.submit(_do_postproc)
+                postproc_futures.append(f)
+
+            def _tx_worker(worker_id, inst):
+                """Pull chunks from shared queue and TX them."""
+                consecutive_failures = 0
+
+                while not shutdown_requested():
                     try:
-                        worker_results = future.result()
-                        all_results.update(worker_results)
+                        item = work_queue.get(timeout=2)
+                    except queue.Empty:
+                        break
+
+                    mode_name, chunk_idx, chunk_text, modem_name = item
+
+                    # Ensure fldigi is alive and set modem
+                    try:
+                        if not inst._is_alive():
+                            inst._restart()
+                        inst.server.modem.set_by_name(modem_name)
+                        time.sleep(0.3)
+                        try:
+                            inst.server.modem.set_carrier(1500)
+                        except Exception:
+                            pass
+                    except Exception:
+                        consecutive_failures += 1
+                        if consecutive_failures >= 10:
+                            log.error("Instance %d: %d consecutive "
+                                      "failures, stopping",
+                                      worker_id, consecutive_failures)
+                            # Mark chunk done (empty) so mode can finish
+                            with audio_lock:
+                                chunks_done[mode_name] += 1
+                            _submit_postproc(mode_name)
+                            break
+                        # Mark chunk done (empty) and continue
+                        with audio_lock:
+                            chunks_done[mode_name] += 1
+                        _submit_postproc(mode_name)
+                        time.sleep(1)
+                        continue
+
+                    cadence = TypingCadenceModel()
+                    raw = inst._tx_chunk(mode_name, chunk_text,
+                                         cadence=cadence)
+
+                    with audio_lock:
+                        if len(raw) > 0:
+                            audio_slots[mode_name][chunk_idx] = raw
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
+                        chunks_done[mode_name] += 1
+
+                    _submit_postproc(mode_name)
+
+                    if consecutive_failures >= 10:
+                        log.error("Instance %d: %d consecutive "
+                                  "failures, stopping",
+                                  worker_id, consecutive_failures)
+                        break
+
+            with ThreadPoolExecutor(max_workers=n_workers) as tx_pool:
+                tx_futures = [
+                    tx_pool.submit(_tx_worker, i, inst)
+                    for i, inst in enumerate(instances)
+                ]
+                for f in as_completed(tx_futures):
+                    try:
+                        f.result()
                     except Exception as e:
-                        log.error("fldigi worker failed: %s", e)
+                        log.error("TX worker failed: %s", e)
+
+            # Wait for any in-flight post-processing to finish
+            for f in as_completed(postproc_futures):
+                try:
+                    f.result()
+                except Exception as e:
+                    log.error("Post-processing failed: %s", e)
+
+            postproc_pool.shutdown(wait=True)
+
+            # Safety: post-process any modes that weren't submitted
+            # (e.g. if all workers died before finishing a mode's chunks)
+            for mode_name in uncached:
+                if mode_name not in postproc_submitted \
+                        and mode_name not in all_results:
+                    log.warning("%15s: post-processing partial "
+                                "(%d/%d chunks)",
+                                mode_name, chunks_done.get(mode_name, 0),
+                                mode_info[mode_name]["n_chunks"])
+                    with audio_lock:
+                        postproc_submitted.add(mode_name)
+                        raw_chunks = audio_slots.get(mode_name) or []
+                        audio_slots[mode_name] = None
+                    n_total = mode_info[mode_name]["n_chunks"]
+                    name, result = self._postprocess_mode(
+                        mode_name, raw_chunks, n_total,
+                        parts_dir, stride, power_threshold)
+                    all_results[name] = result
 
         finally:
             for inst in instances:
