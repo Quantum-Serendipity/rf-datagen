@@ -467,9 +467,11 @@ class FldigiGenerator(BaseGenerator):
                 for idx, mode in enumerate(classes):
                     mode_assignments[idx % n_workers].append(mode)
 
-                # Serialise post-processing so only one mode at a time
-                # holds large numpy arrays (prevents OOM thundering herd).
-                postproc_lock = threading.Lock()
+                # Limit concurrent post-processing to avoid OOM.
+                # TX phase is I/O-bound (typing sleeps) so all workers
+                # run in parallel, but only N do the memory-heavy
+                # windowing/impairments at once.
+                postproc_lock = threading.Semaphore(3)
 
                 def _worker(worker_id, inst, modes):
                     """Process assigned modes sequentially on one instance."""
