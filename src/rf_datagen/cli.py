@@ -177,8 +177,11 @@ def cmd_generate(args):
                 domain_gen.signal_classes = domain_classes
                 domain_tasks.append((name, domain_gen))
 
-            # Run all generators concurrently so slow generators
-            # (e.g. fldigi finishing last 2 modes) don't block others.
+            # Two-lane execution: fldigi (I/O-bound TX) runs in one
+            # thread while other generators run sequentially in another.
+            # This lets CPU-heavy generators use cores that fldigi leaves
+            # idle during real-time modulation, without the memory
+            # explosion of forking all generators simultaneously.
             def _run_generator(task):
                 name, domain_gen = task
                 if _state.shutdown_requested():
@@ -189,17 +192,39 @@ def cmd_generate(args):
                 return domain_gen.run(domain_dir,
                                       seed=cfg.dataset.seed) or {}
 
-            with ThreadPoolExecutor(
-                    max_workers=len(domain_tasks)) as gen_pool:
-                futures = {gen_pool.submit(_run_generator, t): t[0]
-                           for t in domain_tasks}
+            # Separate fldigi (I/O-bound) from others (CPU/mem-bound)
+            io_bound = [t for t in domain_tasks if t[0] == "fldigi"]
+            cpu_bound = [t for t in domain_tasks if t[0] != "fldigi"]
+
+            def _run_sequential(tasks):
+                """Run generators one at a time so only one fork pool
+                exists at once — prevents COW memory multiplication."""
+                combined = {}
+                for task in tasks:
+                    if _state.shutdown_requested():
+                        break
+                    combined.update(_run_generator(task))
+                return combined
+
+            lanes = []
+            if io_bound:
+                lanes.append(("io", io_bound))
+            if cpu_bound:
+                lanes.append(("cpu", cpu_bound))
+
+            with ThreadPoolExecutor(max_workers=len(lanes)) as gen_pool:
+                futures = {}
+                for lane_name, tasks in lanes:
+                    f = gen_pool.submit(_run_sequential, tasks)
+                    futures[f] = lane_name
                 for future in as_completed(futures):
-                    gen_name = futures[future]
+                    lane_name = futures[future]
                     try:
                         gen_results = future.result()
                         all_results.update(gen_results)
                     except Exception as e:
-                        log.error("Generator %s failed: %s", gen_name, e)
+                        log.error("Generator lane %s failed: %s",
+                                  lane_name, e)
     finally:
         signal.signal(signal.SIGINT, prev_sigint)
         signal.signal(signal.SIGTERM, prev_sigterm)
