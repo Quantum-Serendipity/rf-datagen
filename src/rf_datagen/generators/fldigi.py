@@ -442,14 +442,34 @@ class FldigiGenerator(BaseGenerator):
         if not classes:
             return all_results
 
-        n_workers = self.config.workers or 14
-        n_workers = max(1, min(n_workers, len(classes)))
+        # Pre-check cache so we only launch instances for uncached modes
+        uncached = []
+        for mode_name in classes:
+            n_samples = self._boosted_count(mode_name)
+            cfg_hash = self._config_hash(mode_name, n_samples)
+            npy_path = os.path.join(parts_dir, f"{mode_name}.npy")
+            meta_path = os.path.join(parts_dir, f"{mode_name}_meta.csv")
+            hash_path = os.path.join(parts_dir, f"{mode_name}.hash")
+            if self._check_checkpoint(npy_path, meta_path, hash_path,
+                                      n_samples, cfg_hash):
+                log.info("%15s: cached", mode_name)
+                all_results[mode_name] = {"status": "cached",
+                                          "samples": n_samples}
+            else:
+                uncached.append(mode_name)
+
+        if not uncached:
+            log.info("fldigi: all %d modes cached — skipping", len(classes))
+            return all_results
+
+        max_workers = self.config.workers or 14
+        n_workers = max(1, min(max_workers, len(uncached)))
 
         stride = self.impairment_config.effective_stride(self.window_len)
         power_threshold = self.impairment_config.window_power_threshold
 
-        log.info("fldigi: %d modes, %d instances (parallel)",
-                 len(classes), n_workers)
+        log.info("fldigi: %d uncached modes, %d instances (parallel)",
+                 len(uncached), n_workers)
 
         tmpdir = tempfile.mkdtemp(prefix="fldigi_gen_")
         instances = []
@@ -470,9 +490,9 @@ class FldigiGenerator(BaseGenerator):
                     pass
                 instances.append(inst)
 
-            # Distribute modes round-robin across instances
+            # Distribute uncached modes round-robin across instances
             mode_assignments = [[] for _ in range(n_workers)]
-            for idx, mode in enumerate(classes):
+            for idx, mode in enumerate(uncached):
                 mode_assignments[idx % n_workers].append(mode)
 
             # Limit concurrent post-processing to avoid OOM.
