@@ -4,6 +4,7 @@ import os
 import signal
 import shutil
 import subprocess
+import threading
 import time
 import xmlrpc.client
 
@@ -329,11 +330,13 @@ class FldigiGenerator(BaseGenerator):
         raise NotImplementedError("Use run() for fldigi generation")
 
     def _generate_one_mode(self, mode_name, inst, parts_dir, stride,
-                            power_threshold):
+                            power_threshold, postproc_lock=None):
         """Generate a single mode using the given fldigi instance.
 
         Returns (mode_name, result_dict). Checkpoints atomically so that
-        a crash only loses the in-flight mode.
+        a crash only loses the in-flight mode.  postproc_lock serialises
+        the memory-heavy windowing/impairment phase so at most one mode
+        holds large numpy arrays at a time.
         """
         npy_path = os.path.join(parts_dir, f"{mode_name}.npy")
         meta_path = os.path.join(parts_dir, f"{mode_name}_meta.csv")
@@ -367,26 +370,38 @@ class FldigiGenerator(BaseGenerator):
             return mode_name, {"status": "failed",
                                "reason": "signal too short"}
 
-        raw_windows = extract_windows(
-            iq, window_len=self.window_len, stride=stride,
-            power_threshold=power_threshold)
-        if len(raw_windows) == 0:
-            return mode_name, {"status": "failed",
-                               "reason": "no valid windows"}
+        # Serialise the memory-heavy post-processing so only one mode
+        # holds large numpy arrays at a time (prevents OOM thundering herd).
+        if postproc_lock is not None:
+            log.info("%15s: waiting for post-processing slot", mode_name)
+            postproc_lock.acquire()
+        try:
+            raw_windows = extract_windows(
+                iq, window_len=self.window_len, stride=stride,
+                power_threshold=power_threshold)
+            del iq  # free raw IQ before allocating impaired samples
+            if len(raw_windows) == 0:
+                return mode_name, {"status": "failed",
+                                   "reason": "no valid windows"}
 
-        samples, meta = apply_impairments(
-            raw_windows, n_samples, fs=self.fs,
-            window_len=self.window_len, return_metadata=True)
-        atomic_save_npy(npy_path, samples)
-        snrs = meta.get("snrs", [])
-        meta_rows = []
-        for i, s in enumerate(meta["scenarios"]):
-            snr = snrs[i] if i < len(snrs) else ""
-            meta_rows.append([s, snr])
-        atomic_write_csv(meta_path, ["scenario", "snr"], meta_rows)
-        self._write_hash(hash_path, cfg_hash)
-        log.info("%15s: %d raw -> %d samples",
-                 mode_name, len(raw_windows), len(samples))
+            samples, meta = apply_impairments(
+                raw_windows, n_samples, fs=self.fs,
+                window_len=self.window_len, return_metadata=True)
+            del raw_windows  # free before writing to disk
+            atomic_save_npy(npy_path, samples)
+            snrs = meta.get("snrs", [])
+            meta_rows = []
+            for i, s in enumerate(meta["scenarios"]):
+                snr = snrs[i] if i < len(snrs) else ""
+                meta_rows.append([s, snr])
+            atomic_write_csv(meta_path, ["scenario", "snr"], meta_rows)
+            del samples, meta  # free before releasing lock
+            self._write_hash(hash_path, cfg_hash)
+            log.info("%15s: %d raw -> %d samples",
+                     mode_name, len(meta_rows), n_samples)
+        finally:
+            if postproc_lock is not None:
+                postproc_lock.release()
         return mode_name, {"status": "ok", "samples": len(samples),
                            "raw_windows": len(raw_windows)}
 
@@ -452,6 +467,10 @@ class FldigiGenerator(BaseGenerator):
                 for idx, mode in enumerate(classes):
                     mode_assignments[idx % n_workers].append(mode)
 
+                # Serialise post-processing so only one mode at a time
+                # holds large numpy arrays (prevents OOM thundering herd).
+                postproc_lock = threading.Lock()
+
                 def _worker(worker_id, inst, modes):
                     """Process assigned modes sequentially on one instance."""
                     results = {}
@@ -460,7 +479,7 @@ class FldigiGenerator(BaseGenerator):
                             break
                         name, result = self._generate_one_mode(
                             mode_name, inst, parts_dir, stride,
-                            power_threshold)
+                            power_threshold, postproc_lock)
                         results[name] = result
                     return results
 
