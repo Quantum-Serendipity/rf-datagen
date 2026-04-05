@@ -397,7 +397,9 @@ class FldigiGenerator(BaseGenerator):
             samples, meta = apply_impairments(
                 raw_windows, n_samples, fs=self.fs,
                 window_len=self.window_len, return_metadata=True)
+            n_raw = len(raw_windows)
             del raw_windows  # free before writing to disk
+            n_out = len(samples)
             atomic_save_npy(npy_path, samples)
             snrs = meta.get("snrs", [])
             meta_rows = []
@@ -408,12 +410,12 @@ class FldigiGenerator(BaseGenerator):
             del samples, meta  # free before releasing lock
             self._write_hash(hash_path, cfg_hash)
             log.info("%15s: %d raw -> %d samples",
-                     mode_name, len(meta_rows), n_samples)
+                     mode_name, n_raw, n_out)
         finally:
             if postproc_lock is not None:
                 postproc_lock.release()
-        return mode_name, {"status": "ok", "samples": len(samples),
-                           "raw_windows": len(raw_windows)}
+        return mode_name, {"status": "ok", "samples": n_out,
+                           "raw_windows": n_raw}
 
     def run(self, output_dir, seed=42, port=7362):
         """Parallel mode generation with per-mode checkpointing.
