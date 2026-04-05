@@ -41,7 +41,10 @@ class IsolatedPulseServer:
 
         pa_env = os.environ.copy()
         pa_env["XDG_RUNTIME_DIR"] = self._tmpdir
+        # Fully isolate from session D-Bus to avoid name collisions
+        # when running multiple PA instances.
         pa_env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+        pa_env["DBUS_SESSION_BUS_ADDRESS"] = "disabled:"
         self._proc = subprocess.Popen(
             ["pulseaudio",
              "--daemonize=false",
