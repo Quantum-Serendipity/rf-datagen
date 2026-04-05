@@ -239,6 +239,11 @@ class WsjtxGenerator(BaseGenerator):
             encoder = ENCODERS[class_name]
             msg_gen = MSG_GENERATORS[class_name]
             segments = []
+            total_iq = 0
+            n_target = self._boosted_count(class_name)
+            stride = self.impairment_config.effective_stride(self.window_len)
+            # IQ needed for n_target windows with 30% margin
+            iq_needed = int(n_target * 1.3) * stride + self.window_len
             n_messages = self.config.messages_per_mode
             for _ in range(n_messages):
                 msg = msg_gen()
@@ -247,6 +252,9 @@ class WsjtxGenerator(BaseGenerator):
                     iq = audio_to_iq(audio, SYNTH_FS, target_fs=self.fs)
                     if len(iq) >= self.window_len:
                         segments.append(iq)
+                        total_iq += len(iq)
+                        if total_iq >= iq_needed:
+                            break
             if not segments:
                 return np.array([], dtype=np.complex128)
             return np.concatenate(segments)

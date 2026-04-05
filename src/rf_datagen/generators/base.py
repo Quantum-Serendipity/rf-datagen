@@ -53,7 +53,9 @@ def _worker_generate_class(generator, class_name, ci, seed, parts_dir):
         power_thr = generator.impairment_config.window_power_threshold
         raw_windows = extract_windows(
             raw_iq, window_len=generator.window_len,
-            stride=stride, power_threshold=power_thr)
+            stride=stride, power_threshold=power_thr,
+            max_windows=n_samples)
+        del raw_iq
 
     if len(raw_windows) == 0:
         log.warning("%15s: FAILED (no valid windows)", class_name)

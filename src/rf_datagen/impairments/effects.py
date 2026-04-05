@@ -779,7 +779,7 @@ def apply_signal_mixing(sig, mix_signals, sir_db_range=(-5, 10), fs=FS):
 
 
 def extract_windows(iq_signal, window_len=WINDOW_LEN, stride=None,
-                     power_threshold=None):
+                     power_threshold=None, max_windows=0):
     """Extract non-silent training windows from a continuous IQ signal."""
     if stride is None:
         stride = window_len // 2
@@ -792,6 +792,8 @@ def extract_windows(iq_signal, window_len=WINDOW_LEN, stride=None,
         w = iq_signal[start:start + window_len]
         if np.mean(np.abs(w) ** 2) > power_threshold:
             windows.append(normalize_power(w))
+            if max_windows > 0 and len(windows) >= max_windows:
+                break
     if not windows:
         return np.zeros((0, window_len), dtype=np.complex128)
     return np.array(windows)
