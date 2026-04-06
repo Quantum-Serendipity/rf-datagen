@@ -157,8 +157,8 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
     """Assemble per-class .npy checkpoints into a single dataset.
 
     Discovers generator subdirectories under parts/ and concatenates
-    data from all generators per class. Also loads scenario metadata
-    from _meta.csv sidecar files.
+    data from all generators per class. Uses a memory-mapped temp file
+    so the full dataset never needs to fit in RAM.
 
     Args:
         output_dir: Directory containing parts/ subdirectory.
@@ -167,7 +167,7 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
         labels: Ordered list of labels to include. If None, uses SIGNAL_LABELS.
 
     Returns (iq_data, tags, scenarios, snrs) where:
-        iq_data: complex array of shape [N, window_len]
+        iq_data: memory-mapped complex array of shape [N, window_len]
         tags: list of class name strings, length N
         scenarios: list of scenario name strings, length N
         snrs: list of snr strings, length N
@@ -197,82 +197,107 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
         log.warning("Found flat parts/*.npy files (legacy layout). "
                      "Re-run generation to use parts/{generator}/ layout.")
 
-    all_windows = []
-    all_tags = []
-    all_scenarios = []
-    all_snrs = []
+    # --- First pass: discover parts and count total windows ---
+    # Each entry: (label, source, npy_path, meta_path, n_windows)
+    entries = []
+    dtype = None
 
     for label in labels:
-        label_windows = []
-        label_scenarios = []
-        label_snrs = []
-        contributions = {}
-
-        # Load from generator subdirectories
         for gen_name in gen_dirs:
             npy_path = os.path.join(parts_dir, gen_name, f"{label}.npy")
             if not os.path.exists(npy_path):
                 continue
             try:
-                windows = np.load(npy_path)
+                windows = np.load(npy_path, mmap_mode='r')
             except Exception as e:
                 log.warning("Skipping %s/%s — failed to load: %s",
                             gen_name, label, e)
                 continue
             if not _validate_checkpoint(windows, label, gen_name, window_len):
+                del windows
                 continue
-            label_windows.append(windows)
-            contributions[gen_name] = len(windows)
+            if dtype is None:
+                dtype = windows.dtype
+            meta_path = os.path.join(parts_dir, gen_name,
+                                     f"{label}_meta.csv")
+            entries.append((label, gen_name, npy_path, meta_path,
+                            len(windows)))
+            del windows
 
-            meta_path = os.path.join(parts_dir, gen_name, f"{label}_meta.csv")
-            scenarios, snrs = _load_meta(meta_path)
-            if len(scenarios) == len(windows):
-                label_scenarios.extend(scenarios)
-                label_snrs.extend(snrs)
-            else:
-                label_scenarios.extend([""] * len(windows))
-                label_snrs.extend([""] * len(windows))
-
-        # Legacy flat files fallback
         if has_flat:
             flat_path = os.path.join(parts_dir, f"{label}.npy")
             if os.path.exists(flat_path):
                 try:
-                    windows = np.load(flat_path)
+                    windows = np.load(flat_path, mmap_mode='r')
                 except Exception:
                     windows = None
                 if windows is not None and _validate_checkpoint(
                         windows, label, "flat", window_len):
-                    label_windows.append(windows)
-                    contributions["flat"] = len(windows)
+                    if dtype is None:
+                        dtype = windows.dtype
                     flat_meta = os.path.join(parts_dir, f"{label}_meta.csv")
-                    scenarios, snrs = _load_meta(flat_meta)
-                    if len(scenarios) == len(windows):
-                        label_scenarios.extend(scenarios)
-                        label_snrs.extend(snrs)
-                    else:
-                        label_scenarios.extend([""] * len(windows))
-                        label_snrs.extend([""] * len(windows))
+                    entries.append((label, "flat", flat_path, flat_meta,
+                                    len(windows)))
+                if windows is not None:
+                    del windows
 
-        if not label_windows:
-            continue
-
-        total = sum(contributions.values())
-        if len(contributions) > 1:
-            detail = ", ".join(f"{g}={n}" for g, n in
-                               sorted(contributions.items()))
-            log.info("%15s: %s -> %d total", label, detail, total)
-
-        combined = np.concatenate(label_windows, axis=0)
-        all_windows.append(combined)
-        all_tags.extend([label] * len(combined))
-        all_scenarios.extend(label_scenarios)
-        all_snrs.extend(label_snrs)
-
-    if not all_windows:
+    if not entries:
         return np.array([]), [], [], []
 
-    iq_data = np.concatenate(all_windows, axis=0)
+    total_windows = sum(n for _, _, _, _, n in entries)
+    if dtype is None:
+        dtype = np.complex128
+
+    # --- Create memory-mapped output file ---
+    tmp_path = os.path.join(output_dir, ".assemble_tmp.npy")
+    iq_data = np.lib.format.open_memmap(
+        tmp_path, mode='w+', dtype=dtype,
+        shape=(total_windows, window_len))
+
+    # --- Second pass: fill memmap class-by-class ---
+    offset = 0
+    all_tags = []
+    all_scenarios = []
+    all_snrs = []
+    prev_label = None
+    label_contributions = {}
+
+    for label, source, npy_path, meta_path, n in entries:
+        # Log multi-generator contributions when label changes
+        if prev_label is not None and label != prev_label:
+            if len(label_contributions) > 1:
+                detail = ", ".join(f"{g}={c}" for g, c in
+                                   sorted(label_contributions.items()))
+                total = sum(label_contributions.values())
+                log.info("%15s: %s -> %d total", prev_label, detail, total)
+            label_contributions = {}
+        prev_label = label
+
+        windows = np.load(npy_path)
+        iq_data[offset:offset + n] = windows
+        del windows
+
+        label_contributions[source] = n
+        all_tags.extend([label] * n)
+
+        scenarios, snrs = _load_meta(meta_path)
+        if len(scenarios) == n:
+            all_scenarios.extend(scenarios)
+            all_snrs.extend(snrs)
+        else:
+            all_scenarios.extend([""] * n)
+            all_snrs.extend([""] * n)
+
+        offset += n
+
+    # Log last label's contributions
+    if label_contributions and len(label_contributions) > 1:
+        detail = ", ".join(f"{g}={c}" for g, c in
+                           sorted(label_contributions.items()))
+        total = sum(label_contributions.values())
+        log.info("%15s: %s -> %d total", prev_label, detail, total)
+
+    iq_data.flush()
     return iq_data, all_tags, all_scenarios, all_snrs
 
 
@@ -300,9 +325,17 @@ def save_dataset(iq_data, tags, scenarios, output_dir, prefix="rf_datagen",
     if split_ratios is None:
         iq_path = os.path.join(output_dir, f"{prefix}_iq.npy")
         csv_path = os.path.join(output_dir, f"{prefix}_tags.csv")
-        atomic_save_npy(iq_path, iq_data)
+        if isinstance(iq_data, np.memmap):
+            iq_data.flush()
+            src = iq_data.filename
+            n = len(iq_data)
+            del iq_data
+            os.replace(src, iq_path)
+        else:
+            n = len(iq_data)
+            atomic_save_npy(iq_path, iq_data)
         write_csv(tags, scenarios, csv_path, snrs=snrs)
-        log.info("Saved %d windows to %s", len(iq_data), iq_path)
+        log.info("Saved %d windows to %s", n, iq_path)
         log.info("Saved metadata to %s", csv_path)
         return iq_path, csv_path
 

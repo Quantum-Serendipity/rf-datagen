@@ -282,13 +282,14 @@ def cmd_generate(args):
         dw = _diversity_check(iq_data, tags)
         all_diversity_warnings.extend(dw)
 
+        n_windows = len(iq_data)
         save_dataset(iq_data, tags, scenarios, domain_dir, prefix=prefix,
                      snrs=snrs)
 
         iq_path = os.path.join(domain_dir, f"{prefix}_iq.npy")
         if os.path.exists(iq_path):
             total_size_mb += os.path.getsize(iq_path) / (1024 * 1024)
-        total_windows += len(iq_data)
+        total_windows += n_windows
         all_tags.extend(tags)
 
     elapsed = time.time() - t_start
