@@ -14,6 +14,7 @@ from .config import load_config, GeneratorConfig
 from .constants import SIGNAL_LABELS
 from .domains import DOMAINS, labels_for_domain, SIGNAL_DOMAIN_MAP
 from .generators import GENERATORS
+from .generators.base import BaseGenerator
 from . import _state
 from .logging_config import setup_logging, get_logger
 from .output import assemble_parts, save_dataset, atomic_write_json
@@ -177,11 +178,19 @@ def cmd_generate(args):
                 domain_gen.signal_classes = domain_classes
                 domain_tasks.append((name, domain_gen))
 
-            # Two-lane execution: fldigi (I/O-bound TX) runs in one
-            # thread while other generators run sequentially in another.
-            # This lets CPU-heavy generators use cores that fldigi leaves
-            # idle during real-time modulation, without the memory
-            # explosion of forking all generators simultaneously.
+            # Three-lane execution: generators are grouped by resource
+            # profile and each lane runs concurrently in its own thread.
+            #
+            #  io:    fldigi — I/O-bound real-time TX, manages own threads
+            #  inproc: generators with custom run() (analog, digivoice) —
+            #          heavy in-process TTS/codec work, sequential to avoid
+            #          concurrent memory peaks
+            #  fork:  generators using BaseGenerator.run() with
+            #          ProcessPoolExecutor — sequential among themselves
+            #          to avoid concurrent fork pools
+            #
+            # All three lanes overlap, so fldigi TX, TTS synthesis, and
+            # fork-based encoding all progress simultaneously.
             def _run_generator(task):
                 name, domain_gen = task
                 if _state.shutdown_requested():
@@ -192,13 +201,20 @@ def cmd_generate(args):
                 return domain_gen.run(domain_dir,
                                       seed=cfg.dataset.seed) or {}
 
-            # Separate fldigi (I/O-bound) from others (CPU/mem-bound)
-            io_bound = [t for t in domain_tasks if t[0] == "fldigi"]
-            cpu_bound = [t for t in domain_tasks if t[0] != "fldigi"]
+            io_bound = []
+            inproc = []
+            fork_based = []
+            for t in domain_tasks:
+                name, gen = t
+                if name == "fldigi":
+                    io_bound.append(t)
+                elif type(gen).run is not BaseGenerator.run:
+                    inproc.append(t)
+                else:
+                    fork_based.append(t)
 
             def _run_sequential(tasks):
-                """Run generators one at a time so only one fork pool
-                exists at once — prevents COW memory multiplication."""
+                """Run generators one at a time within a lane."""
                 combined = {}
                 for task in tasks:
                     if _state.shutdown_requested():
@@ -209,8 +225,10 @@ def cmd_generate(args):
             lanes = []
             if io_bound:
                 lanes.append(("io", io_bound))
-            if cpu_bound:
-                lanes.append(("cpu", cpu_bound))
+            if inproc:
+                lanes.append(("inproc", inproc))
+            if fork_based:
+                lanes.append(("fork", fork_based))
 
             with ThreadPoolExecutor(max_workers=len(lanes)) as gen_pool:
                 futures = {}
