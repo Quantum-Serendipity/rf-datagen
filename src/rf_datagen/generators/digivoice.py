@@ -272,7 +272,8 @@ class DigivoiceGenerator(BaseGenerator):
                 raw_windows = extract_windows(
                     combined, window_len=self.window_len,
                     stride=stride, power_threshold=power_threshold,
-                    max_windows=n_samples)
+                    max_windows=n_samples,
+                    dtype=np.complex64)
                 del combined
                 if len(raw_windows) == 0:
                     log.warning("%15s: FAILED (no valid windows)", mode_name)
@@ -282,7 +283,8 @@ class DigivoiceGenerator(BaseGenerator):
 
                 samples, meta = apply_impairments(
                     raw_windows, n_samples, fs=self.fs,
-                    window_len=self.window_len, return_metadata=True)
+                    window_len=self.window_len, return_metadata=True,
+                    dtype=np.complex64)
 
                 atomic_save_npy(npy_path, samples)
                 snrs = meta.get("snrs", [])

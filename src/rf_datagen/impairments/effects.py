@@ -779,14 +779,22 @@ def apply_signal_mixing(sig, mix_signals, sir_db_range=(-5, 10), fs=FS):
 
 
 def extract_windows(iq_signal, window_len=WINDOW_LEN, stride=None,
-                     power_threshold=None, max_windows=0):
-    """Extract non-silent training windows from a continuous IQ signal."""
+                     power_threshold=None, max_windows=0,
+                     dtype=np.complex128):
+    """Extract non-silent training windows from a continuous IQ signal.
+
+    Args:
+        dtype: Output array dtype.  Defaults to complex128 for backward
+               compat; pass np.complex64 to halve generation RAM at the
+               cost of single-precision IQ (the training pipeline
+               converts to float32 anyway).
+    """
     if stride is None:
         stride = window_len // 2
     if power_threshold is None:
         power_threshold = 0.001
     if len(iq_signal) < window_len:
-        return np.zeros((0, window_len), dtype=np.complex128)
+        return np.zeros((0, window_len), dtype=dtype)
     windows = []
     for start in range(0, len(iq_signal) - window_len + 1, stride):
         w = iq_signal[start:start + window_len]
@@ -795,5 +803,5 @@ def extract_windows(iq_signal, window_len=WINDOW_LEN, stride=None,
             if max_windows > 0 and len(windows) >= max_windows:
                 break
     if not windows:
-        return np.zeros((0, window_len), dtype=np.complex128)
-    return np.array(windows)
+        return np.zeros((0, window_len), dtype=dtype)
+    return np.asarray(windows, dtype=dtype)

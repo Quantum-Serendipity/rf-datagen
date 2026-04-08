@@ -475,10 +475,20 @@ def cmd_rewindow(args):
                                 class_name, len(raw_iq), window_len)
                     continue
 
+                # Match BaseGenerator dtype resolution: domain hits use
+                # the domain's declared dtype, anything else (including
+                # rewindowing to a non-default window_len) uses
+                # complex64 to halve RAM during the rewindow pass.
+                if window_len == domain.window_length:
+                    out_dtype = domain.dtype.type
+                else:
+                    out_dtype = np.complex64
+
                 raw_windows = extract_windows(
                     raw_iq, window_len=window_len, stride=stride,
                     power_threshold=power_threshold,
-                    max_windows=n_samples)
+                    max_windows=n_samples,
+                    dtype=out_dtype)
                 del raw_iq
 
                 if len(raw_windows) == 0:
@@ -489,7 +499,7 @@ def cmd_rewindow(args):
                 samples, meta = apply_impairments(
                     raw_windows, n_samples,
                     fs=domain.sample_rate, window_len=window_len,
-                    return_metadata=True, dtype=domain.dtype.type)
+                    return_metadata=True, dtype=out_dtype)
                 n_raw = len(raw_windows)
                 del raw_windows
 

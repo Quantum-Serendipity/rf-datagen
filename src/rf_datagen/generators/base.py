@@ -62,7 +62,8 @@ def _worker_generate_class(generator, class_name, ci, seed, parts_dir):
         raw_windows = extract_windows(
             raw_iq, window_len=generator.window_len,
             stride=stride, power_threshold=power_thr,
-            max_windows=n_samples)
+            max_windows=n_samples,
+            dtype=generator._dtype)
         del raw_iq
 
     if len(raw_windows) == 0:
@@ -150,7 +151,11 @@ class BaseGenerator(ABC):
         self.samples_per_class = config.samples_per_class
         self.fs = fs
         self.window_len = window_len
-        # Resolve output dtype from domain registry
+        # Resolve output dtype from domain registry.  Domain hits use the
+        # domain's declared dtype (narrowband=complex128 for backward
+        # compat); anything else falls back to complex64 to halve the
+        # generation memory footprint, since the training pipeline
+        # converts to float32 anyway and gains nothing from complex128.
         self._dtype = None
         for domain in DOMAINS.values():
             if domain.sample_rate == fs and domain.window_length == window_len:
@@ -158,7 +163,7 @@ class BaseGenerator(ABC):
                 break
         if self._dtype is None:
             import numpy as np
-            self._dtype = np.complex128
+            self._dtype = np.complex64
 
     def check_prerequisites(self):
         """Return list of missing CLI tools. Empty = ready."""

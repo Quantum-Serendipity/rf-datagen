@@ -397,7 +397,8 @@ class FldigiGenerator(BaseGenerator):
         raw_windows = extract_windows(
             iq, window_len=self.window_len, stride=stride,
             power_threshold=power_threshold,
-            max_windows=n_samples)
+            max_windows=n_samples,
+            dtype=np.complex64)
         del iq
 
         if len(raw_windows) == 0:
@@ -406,7 +407,8 @@ class FldigiGenerator(BaseGenerator):
                                "reason": "no valid windows"}
         samples, meta = apply_impairments(
             raw_windows, n_samples, fs=self.fs,
-            window_len=self.window_len, return_metadata=True)
+            window_len=self.window_len, return_metadata=True,
+            dtype=np.complex64)
         n_raw = len(raw_windows)
         del raw_windows
         n_out = len(samples)
@@ -579,11 +581,29 @@ class FldigiGenerator(BaseGenerator):
                     pass
                 instances.append(inst)
 
-            # Post-processing pool: max 3 concurrent to cap memory.
-            # Runs alongside TX — as soon as all chunks for a mode
-            # are collected, post-processing starts while other
-            # instances keep pulling TX chunks.
-            postproc_pool = ThreadPoolExecutor(max_workers=3)
+            # Post-processing pool: cap concurrency by per-mode RAM cost.
+            # Each in-flight mode allocates roughly
+            #   2 × n_samples × window_len × itemsize
+            # bytes (raw_windows held until apply_impairments returns,
+            # plus the impaired output array).  At window_len=2048 and
+            # n_samples=22500 that's ~1.5 GB per mode → 3 was fine.  At
+            # window_len=12000 it's ~9 GB per mode → 3 concurrent OOMs
+            # an 86 GB box.  We budget ~6 GB per concurrent post-proc
+            # (matches complex64 + a worst-case unboosted target) and
+            # cap to 1..3 modes.  Runs alongside TX — as soon as all
+            # chunks for a mode are collected, post-processing starts
+            # while other instances keep pulling TX chunks.
+            _BYTES_PER_POSTPROC_BUDGET = 6 * 1024 * 1024 * 1024  # 6 GB
+            _max_target = max(
+                self._boosted_count(m) for m in uncached)
+            _per_mode_bytes = 2 * _max_target * self.window_len * 8  # complex64
+            postproc_workers = max(
+                1, min(3, _BYTES_PER_POSTPROC_BUDGET // _per_mode_bytes))
+            log.info("fldigi: post-proc pool = %d worker(s) "
+                     "(per-mode budget %.1f GB, max target %d × %d samples)",
+                     postproc_workers,
+                     _per_mode_bytes / 1e9, _max_target, self.window_len)
+            postproc_pool = ThreadPoolExecutor(max_workers=postproc_workers)
             postproc_futures = []
 
             def _submit_postproc(mode_name):
