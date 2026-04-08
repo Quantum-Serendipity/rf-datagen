@@ -118,47 +118,56 @@ class AnalogGenerator(BaseGenerator):
                                           "samples": n_samples}
                     continue
 
-                variants = ANALOG_MODES[mode_name]
-                mode_iq_segments = []
+                # Two-tier cache: try raw stream before expensive TTS
+                cached_raw = self._load_raw_stream(parts_dir, mode_name)
+                if cached_raw is not None:
+                    log.info("%15s: raw stream cached, re-windowing...",
+                             mode_name)
+                    combined_iq = cached_raw
+                else:
+                    variants = ANALOG_MODES[mode_name]
+                    mode_iq_segments = []
 
-                for i in range(utterances):
-                    text, style = gen_speech_text()
-                    audio, wav_fs = tts.synthesize(text, tmpdir)
-                    if len(audio) < 1000:
+                    for i in range(utterances):
+                        text, style = gen_speech_text()
+                        audio, wav_fs = tts.synthesize(text, tmpdir)
+                        if len(audio) < 1000:
+                            continue
+
+                        variant = variants[i % len(variants)]
+
+                        if style == "contest":
+                            audio = apply_contest_processing(audio, wav_fs)
+                            audio = apply_ptt_transients(audio, wav_fs)
+                        else:
+                            audio = apply_mic_effects(audio, wav_fs)
+                            audio = apply_tx_audio_clipping(audio, wav_fs)
+                            audio = apply_ptt_transients(audio, wav_fs)
+                        if variant in ("USB", "LSB"):
+                            audio = apply_vox_artifacts(audio, wav_fs)
+
+                        if variant in ("USB", "LSB"):
+                            iq = modulate_ssb(audio, wav_fs, variant, target_fs=self.fs)
+                        elif variant == "AM":
+                            iq = modulate_am(audio, wav_fs, target_fs=self.fs)
+                        elif variant == "NBFM":
+                            iq = modulate_fm(audio, wav_fs, target_fs=self.fs)
+                        else:
+                            continue
+
+                        if len(iq) >= self.window_len:
+                            mode_iq_segments.append(iq)
+
+                    if not mode_iq_segments:
+                        log.warning("%15s: FAILED (no audio)", mode_name)
+                        results[mode_name] = {"status": "failed",
+                                              "reason": "no audio"}
                         continue
 
-                    variant = variants[i % len(variants)]
+                    combined_iq = np.concatenate(mode_iq_segments)
+                    del mode_iq_segments
+                    self._save_raw_stream(parts_dir, mode_name, combined_iq)
 
-                    if style == "contest":
-                        audio = apply_contest_processing(audio, wav_fs)
-                        audio = apply_ptt_transients(audio, wav_fs)
-                    else:
-                        audio = apply_mic_effects(audio, wav_fs)
-                        audio = apply_tx_audio_clipping(audio, wav_fs)
-                        audio = apply_ptt_transients(audio, wav_fs)
-                    if variant in ("USB", "LSB"):
-                        audio = apply_vox_artifacts(audio, wav_fs)
-
-                    if variant in ("USB", "LSB"):
-                        iq = modulate_ssb(audio, wav_fs, variant, target_fs=self.fs)
-                    elif variant == "AM":
-                        iq = modulate_am(audio, wav_fs, target_fs=self.fs)
-                    elif variant == "NBFM":
-                        iq = modulate_fm(audio, wav_fs, target_fs=self.fs)
-                    else:
-                        continue
-
-                    if len(iq) >= self.window_len:
-                        mode_iq_segments.append(iq)
-
-                if not mode_iq_segments:
-                    log.warning("%15s: FAILED (no audio)", mode_name)
-                    results[mode_name] = {"status": "failed",
-                                          "reason": "no audio"}
-                    continue
-
-                combined_iq = np.concatenate(mode_iq_segments)
-                del mode_iq_segments
                 raw_windows = extract_windows(
                     combined_iq, window_len=self.window_len,
                     stride=stride, power_threshold=power_threshold,

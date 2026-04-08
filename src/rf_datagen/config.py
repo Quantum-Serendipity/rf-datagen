@@ -181,6 +181,26 @@ def checkpoint_config_hash(gen_cfg: "GeneratorConfig",
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
+def raw_stream_config_hash(gen_cfg: "GeneratorConfig",
+                           class_name: str,
+                           fs: int = FS,
+                           generator_name: str = "") -> str:
+    """Hash of parameters that affect raw IQ stream content.
+
+    Excludes window_len, n_samples, and impairment config since those
+    only affect post-windowing processing of the raw stream.
+    """
+    blob = {
+        "class": class_name,
+        "fs": fs,
+        "generator": gen_cfg._hash_dict(),
+        "generator_name": generator_name,
+        "pipeline_version": 2,
+    }
+    raw = json.dumps(blob, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
 def _merge_generator(base: GeneratorConfig, toml_dict: dict) -> GeneratorConfig:
     """Merge TOML dict into a GeneratorConfig."""
     for key in ("enabled", "samples_per_class", "classes", "workers",

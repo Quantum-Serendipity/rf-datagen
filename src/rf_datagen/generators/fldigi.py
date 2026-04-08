@@ -355,28 +355,38 @@ class FldigiGenerator(BaseGenerator):
         raise NotImplementedError("Use run() for fldigi generation")
 
     def _postprocess_mode(self, mode_name, raw_chunks, n_total_chunks,
-                          parts_dir, stride, power_threshold):
+                          parts_dir, stride, power_threshold,
+                          preloaded_iq=None):
         """Concatenate audio chunks, convert to IQ, window, impair, save.
 
-        Called when all TX chunks for a mode have been collected.
+        Called when all TX chunks for a mode have been collected, or with
+        preloaded_iq when re-windowing from a cached raw stream.
         Returns (mode_name, result_dict).
         """
-        valid = [a for a in raw_chunks if a is not None and len(a) > 0]
-        del raw_chunks
-        n_valid = len(valid)
+        if preloaded_iq is not None:
+            iq = preloaded_iq
+            n_valid = 0
+        else:
+            valid = [a for a in raw_chunks if a is not None and len(a) > 0]
+            del raw_chunks
+            n_valid = len(valid)
 
-        if not valid:
-            log.warning("%15s: FAILED (%d/%d chunks empty)",
-                        mode_name, n_total_chunks, n_total_chunks)
-            return mode_name, {"status": "failed", "reason": "no valid chunks"}
+            if not valid:
+                log.warning("%15s: FAILED (%d/%d chunks empty)",
+                            mode_name, n_total_chunks, n_total_chunks)
+                return mode_name, {"status": "failed",
+                                   "reason": "no valid chunks"}
 
-        log.info("%15s: %d/%d chunks captured, post-processing...",
-                 mode_name, n_valid, n_total_chunks)
+            log.info("%15s: %d/%d chunks captured, post-processing...",
+                     mode_name, n_valid, n_total_chunks)
 
-        combined = np.concatenate(valid)
-        del valid
-        iq = audio_to_iq(combined, CAPTURE_FS, target_fs=self.fs)
-        del combined
+            combined = np.concatenate(valid)
+            del valid
+            iq = audio_to_iq(combined, CAPTURE_FS, target_fs=self.fs)
+            del combined
+
+            # Save raw stream before windowing
+            self._save_raw_stream(parts_dir, mode_name, iq)
 
         if len(iq) < self.window_len:
             log.warning("%15s: FAILED (signal too short)", mode_name)
@@ -416,8 +426,12 @@ class FldigiGenerator(BaseGenerator):
         self._write_hash(hash_path, cfg_hash)
         del samples, meta
 
-        log.info("%15s: %d raw -> %d samples (from %d/%d chunks)",
-                 mode_name, n_raw, n_out, n_valid, n_total_chunks)
+        if preloaded_iq is not None:
+            log.info("%15s: %d raw -> %d samples (from cached raw stream)",
+                     mode_name, n_raw, n_out)
+        else:
+            log.info("%15s: %d raw -> %d samples (from %d/%d chunks)",
+                     mode_name, n_raw, n_out, n_valid, n_total_chunks)
         return mode_name, {"status": "ok", "samples": n_out,
                            "raw_windows": n_raw}
 
@@ -453,8 +467,14 @@ class FldigiGenerator(BaseGenerator):
         if not classes:
             return all_results
 
-        # Pre-check cache so we only launch instances for uncached modes
+        # Resolved up-front so the rewindow_only path can use them.
+        stride = self.impairment_config.effective_stride(self.window_len)
+        power_threshold = self.impairment_config.window_power_threshold
+
+        # Pre-check cache so we only launch instances for uncached modes.
+        # Two-tier: windowed cache hit → skip; raw stream cache hit → rewindow only.
         uncached = []
+        rewindow_only = []
         for mode_name in classes:
             n_samples = self._boosted_count(mode_name)
             cfg_hash = self._config_hash(mode_name, n_samples)
@@ -466,17 +486,26 @@ class FldigiGenerator(BaseGenerator):
                 log.info("%15s: cached", mode_name)
                 all_results[mode_name] = {"status": "cached",
                                           "samples": n_samples}
+            elif self._load_raw_stream(parts_dir, mode_name) is not None:
+                log.info("%15s: raw stream cached, will re-window", mode_name)
+                rewindow_only.append(mode_name)
             else:
                 uncached.append(mode_name)
 
+        # Process rewindow-only modes (no TX needed)
+        for mode_name in rewindow_only:
+            raw_iq = self._load_raw_stream(parts_dir, mode_name)
+            name, result = self._postprocess_mode(
+                mode_name, None, 0, parts_dir, stride, power_threshold,
+                preloaded_iq=raw_iq)
+            all_results[name] = result
+
         if not uncached:
-            log.info("fldigi: all %d modes cached — skipping", len(classes))
+            log.info("fldigi: all %d modes cached/re-windowed — skipping TX",
+                     len(classes))
             return all_results
 
         max_workers = self.config.workers or 14
-
-        stride = self.impairment_config.effective_stride(self.window_len)
-        power_threshold = self.impairment_config.window_power_threshold
 
         # --- Pre-split all uncached modes into chunk work items ---
         mode_info = {}       # mode -> {n_chunks, n_samples}

@@ -163,6 +163,15 @@ def cmd_generate(args):
             else:
                 domain_dir = output_dir
 
+            # Honor cfg.dataset.window_length when explicitly set; fall back
+            # to domain default otherwise. (Single-domain configs override;
+            # multi-domain users should leave window_length at the default.)
+            from .constants import WINDOW_LEN as _DEFAULT_WINDOW_LEN
+            if cfg.dataset.window_length != _DEFAULT_WINDOW_LEN:
+                effective_window_len = cfg.dataset.window_length
+            else:
+                effective_window_len = domain.window_length
+
             # Build list of generators to run for this domain
             domain_tasks = []
             for name, gen in plan:
@@ -174,7 +183,7 @@ def cmd_generate(args):
                 domain_gen = GENERATORS[name](
                     gen_cfg, cfg.impairments,
                     fs=domain.sample_rate,
-                    window_len=domain.window_length)
+                    window_len=effective_window_len)
                 domain_gen.signal_classes = domain_classes
                 domain_tasks.append((name, domain_gen))
 
@@ -257,6 +266,7 @@ def cmd_generate(args):
     all_tags = []
     all_diversity_warnings = []
 
+    from .constants import WINDOW_LEN as _DEFAULT_WINDOW_LEN
     for domain_name in enabled_domains:
         domain = DOMAINS[domain_name]
         domain_labels = labels_for_domain(domain_name)
@@ -268,10 +278,16 @@ def cmd_generate(args):
             domain_dir = output_dir
             prefix = "rf_datagen"
 
-        log.info("Assembling %s dataset...", domain_name)
+        if cfg.dataset.window_length != _DEFAULT_WINDOW_LEN:
+            assemble_window_len = cfg.dataset.window_length
+        else:
+            assemble_window_len = domain.window_length
+
+        log.info("Assembling %s dataset (window_len=%d)...",
+                 domain_name, assemble_window_len)
         iq_data, tags, scenarios, snrs = assemble_parts(
             domain_dir,
-            window_len=domain.window_length,
+            window_len=assemble_window_len,
             labels=domain_labels)
 
         if len(iq_data) == 0:
@@ -347,6 +363,183 @@ def cmd_generate(args):
         log.warning("Generated %d/%d classes (%d failed)",
                     ok_count, total_classes, len(failed))
         return 2  # partial success
+    return 0
+
+
+def cmd_rewindow(args):
+    """Re-window existing raw IQ streams with different parameters.
+
+    Loads raw continuous IQ from parts/{generator}/{class}_raw.npy files,
+    applies extract_windows() + apply_impairments() with the config's
+    window_length and impairment settings, and assembles the final dataset.
+    """
+    cfg = load_config(args.config)
+
+    if args.output:
+        cfg.dataset.output_dir = args.output
+    output_dir = cfg.dataset.output_dir
+
+    setup_logging(verbose=args.verbose, quiet=args.quiet)
+    np.random.seed(cfg.dataset.seed)
+
+    from .impairments import extract_windows, apply_impairments, configure_impairments
+    from .config import checkpoint_config_hash, ImpairmentConfig
+    from .output import atomic_save_npy, atomic_write_csv
+
+    configure_impairments(cfg.impairments)
+
+    # Resolve domain
+    enabled_domains = cfg.dataset.domains
+    total_windows = 0
+    total_size_mb = 0.0
+    all_tags = []
+
+    for domain_name in enabled_domains:
+        domain = DOMAINS[domain_name]
+        domain_labels = labels_for_domain(domain_name)
+
+        if len(enabled_domains) > 1:
+            domain_dir = os.path.join(output_dir, domain_name)
+            prefix = f"rf_datagen_{domain_name}"
+        else:
+            domain_dir = output_dir
+            prefix = "rf_datagen"
+
+        parts_dir = os.path.join(domain_dir, "parts")
+        if not os.path.exists(parts_dir):
+            log.warning("No parts/ directory in %s", domain_dir)
+            continue
+
+        # Use config window_length if set, else domain default
+        window_len = getattr(cfg.dataset, 'window_length',
+                             domain.window_length)
+
+        # Discover generator subdirectories
+        gen_dirs = sorted(
+            d for d in os.listdir(parts_dir)
+            if os.path.isdir(os.path.join(parts_dir, d)))
+
+        if args.generators:
+            gen_filter = set(args.generators.split(","))
+            gen_dirs = [g for g in gen_dirs if g in gen_filter]
+
+        # Resolve impairment params
+        stride = cfg.impairments.effective_stride(window_len)
+        power_threshold = cfg.impairments.window_power_threshold
+
+        rewindowed = 0
+        skipped = 0
+
+        for gen_name in gen_dirs:
+            gen_dir = os.path.join(parts_dir, gen_name)
+            raw_files = sorted(
+                f for f in os.listdir(gen_dir) if f.endswith("_raw.npy"))
+
+            gen_cfg = cfg.generators.get(gen_name, GeneratorConfig())
+
+            for raw_file in raw_files:
+                class_name = raw_file.replace("_raw.npy", "")
+                if class_name not in domain_labels:
+                    continue
+
+                raw_path = os.path.join(gen_dir, raw_file)
+                npy_path = os.path.join(gen_dir, f"{class_name}.npy")
+                meta_path = os.path.join(gen_dir, f"{class_name}_meta.csv")
+                hash_path = os.path.join(gen_dir, f"{class_name}.hash")
+
+                # Determine target sample count
+                boost = gen_cfg.boost.get(class_name, 1.0)
+                n_samples = int(gen_cfg.samples_per_class * boost)
+
+                # Check if windowed output is already up-to-date
+                cfg_hash = checkpoint_config_hash(
+                    gen_cfg, cfg.impairments, class_name, n_samples,
+                    fs=domain.sample_rate, window_len=window_len,
+                    generator_name=gen_name)
+                if BaseGenerator._check_checkpoint(
+                        npy_path, meta_path, hash_path, n_samples, cfg_hash):
+                    log.info("%15s: windowed output up-to-date", class_name)
+                    skipped += 1
+                    continue
+
+                # Load raw stream and re-window
+                try:
+                    raw_iq = np.load(raw_path)
+                except Exception as e:
+                    log.warning("%15s: failed to load raw stream: %s",
+                                class_name, e)
+                    continue
+
+                if len(raw_iq) < window_len:
+                    log.warning("%15s: raw stream too short (%d < %d)",
+                                class_name, len(raw_iq), window_len)
+                    continue
+
+                raw_windows = extract_windows(
+                    raw_iq, window_len=window_len, stride=stride,
+                    power_threshold=power_threshold,
+                    max_windows=n_samples)
+                del raw_iq
+
+                if len(raw_windows) == 0:
+                    log.warning("%15s: no valid windows from raw stream",
+                                class_name)
+                    continue
+
+                samples, meta = apply_impairments(
+                    raw_windows, n_samples,
+                    fs=domain.sample_rate, window_len=window_len,
+                    return_metadata=True, dtype=domain.dtype.type)
+                n_raw = len(raw_windows)
+                del raw_windows
+
+                atomic_save_npy(npy_path, samples)
+                snrs = meta.get("snrs", [])
+                meta_rows = []
+                for i, s in enumerate(meta["scenarios"]):
+                    snr = snrs[i] if i < len(snrs) else ""
+                    meta_rows.append([s, snr])
+                atomic_write_csv(meta_path, ["scenario", "snr"], meta_rows)
+                BaseGenerator._write_hash(hash_path, cfg_hash)
+
+                log.info("%15s: %d raw -> %d samples (window_len=%d)",
+                         class_name, n_raw, len(samples), window_len)
+                rewindowed += 1
+
+        log.info("Re-windowed %d classes, %d already up-to-date",
+                 rewindowed, skipped)
+
+        # Assemble final dataset
+        log.info("Assembling %s dataset (window_len=%d)...",
+                 domain_name, window_len)
+        iq_data, tags, scenarios, snrs = assemble_parts(
+            domain_dir, window_len=window_len, labels=domain_labels)
+
+        if len(iq_data) == 0:
+            log.warning("No data for domain %s after re-windowing", domain_name)
+            continue
+
+        n_windows = len(iq_data)
+        save_dataset(iq_data, tags, scenarios, domain_dir, prefix=prefix,
+                     snrs=snrs)
+
+        iq_path = os.path.join(domain_dir, f"{prefix}_iq.npy")
+        if os.path.exists(iq_path):
+            total_size_mb += os.path.getsize(iq_path) / (1024 * 1024)
+        total_windows += n_windows
+        all_tags.extend(tags)
+
+    if total_windows == 0:
+        log.error("No data after re-windowing")
+        return 1
+
+    from collections import Counter
+    counts = Counter(all_tags)
+    log.info("Re-windowed dataset: %d windows across %d classes, %.1f MB",
+             total_windows, len(counts), total_size_mb)
+    for label in sorted(counts):
+        log.info("  %15s: %d", label, counts[label])
+
     return 0
 
 
@@ -629,6 +822,20 @@ def main():
     p_gen.add_argument("--quiet", "-q", action="store_true",
                        help="Suppress INFO messages (WARNING only)")
 
+    # rewindow
+    p_rew = sub.add_parser("rewindow",
+                           help="Re-window raw IQ streams with different parameters")
+    p_rew.add_argument("--config", "-c", required=True,
+                       help="Config file with desired window_length and impairments")
+    p_rew.add_argument("--output", "-o", default=None,
+                       help="Output directory containing parts/ with raw streams")
+    p_rew.add_argument("--generators", "-g", default=None,
+                       help="Comma-separated generator names to process")
+    p_rew.add_argument("--verbose", "-v", action="store_true",
+                       help="Enable verbose output")
+    p_rew.add_argument("--quiet", "-q", action="store_true",
+                       help="Suppress INFO messages")
+
     # list
     sub.add_parser("list", help="List all signal classes and their generators")
 
@@ -831,6 +1038,7 @@ def main():
 
     commands = {
         "generate": cmd_generate,
+        "rewindow": cmd_rewindow,
         "list": cmd_list,
         "cleanup": cmd_cleanup,
         "validate": cmd_validate,

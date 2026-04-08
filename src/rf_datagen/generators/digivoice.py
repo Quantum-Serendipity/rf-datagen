@@ -218,48 +218,57 @@ class DigivoiceGenerator(BaseGenerator):
                                           "samples": n_samples}
                     continue
 
-                mode_iq_segments = []
-                np.random.seed(seed + hash(mode_name) % 10000)
+                # Two-tier cache: try raw stream before expensive codecs
+                cached_raw = self._load_raw_stream(parts_dir, mode_name)
+                if cached_raw is not None:
+                    log.info("%15s: raw stream cached, re-windowing...",
+                             mode_name)
+                    combined = cached_raw
+                else:
+                    mode_iq_segments = []
+                    np.random.seed(seed + hash(mode_name) % 10000)
 
-                for i in range(utterances):
-                    text, _ = gen_speech_text()
-                    audio, wav_fs = tts.synthesize(text, tmpdir)
-                    if len(audio) < 1000:
+                    for i in range(utterances):
+                        text, _ = gen_speech_text()
+                        audio, wav_fs = tts.synthesize(text, tmpdir)
+                        if len(audio) < 1000:
+                            continue
+
+                        audio = apply_mic_effects(audio, wav_fs)
+                        audio = apply_tx_audio_clipping(audio, wav_fs)
+                        audio = apply_ptt_transients(audio, wav_fs)
+
+                        # Write raw 8kHz s16le for codec input
+                        from scipy.signal import resample as sig_resample
+                        audio_8k = sig_resample(audio, int(len(audio) * 8000 / wav_fs))
+                        raw_path = os.path.join(tmpdir, "speech_8k.raw")
+                        (audio_8k * 32767).astype(np.int16).tofile(raw_path)
+
+                        if mode_name in TIER1_MODES:
+                            if not tier1_available.get(mode_name, False):
+                                continue
+                            if mode_name == "FREEDV":
+                                iq = generate_freedv(raw_path, tmpdir, target_fs=self.fs,
+                                                     freedv_modes=self.config.freedv_modes)
+                            else:
+                                iq = generate_m17(raw_path, tmpdir, target_fs=self.fs)
+                        else:
+                            iq = generate_tier2(raw_path, tmpdir, mode_name, fs=self.fs,
+                                                codec2_mode=self.config.codec2_mode)
+
+                        if len(iq) >= self.window_len:
+                            mode_iq_segments.append(iq)
+
+                    if not mode_iq_segments:
+                        log.warning("%15s: FAILED (no audio segments)", mode_name)
+                        results[mode_name] = {"status": "failed",
+                                              "reason": "no audio segments"}
                         continue
 
-                    audio = apply_mic_effects(audio, wav_fs)
-                    audio = apply_tx_audio_clipping(audio, wav_fs)
-                    audio = apply_ptt_transients(audio, wav_fs)
+                    combined = np.concatenate(mode_iq_segments)
+                    del mode_iq_segments
+                    self._save_raw_stream(parts_dir, mode_name, combined)
 
-                    # Write raw 8kHz s16le for codec input
-                    from scipy.signal import resample as sig_resample
-                    audio_8k = sig_resample(audio, int(len(audio) * 8000 / wav_fs))
-                    raw_path = os.path.join(tmpdir, "speech_8k.raw")
-                    (audio_8k * 32767).astype(np.int16).tofile(raw_path)
-
-                    if mode_name in TIER1_MODES:
-                        if not tier1_available.get(mode_name, False):
-                            continue
-                        if mode_name == "FREEDV":
-                            iq = generate_freedv(raw_path, tmpdir, target_fs=self.fs,
-                                                 freedv_modes=self.config.freedv_modes)
-                        else:
-                            iq = generate_m17(raw_path, tmpdir, target_fs=self.fs)
-                    else:
-                        iq = generate_tier2(raw_path, tmpdir, mode_name, fs=self.fs,
-                                            codec2_mode=self.config.codec2_mode)
-
-                    if len(iq) >= self.window_len:
-                        mode_iq_segments.append(iq)
-
-                if not mode_iq_segments:
-                    log.warning("%15s: FAILED (no audio segments)", mode_name)
-                    results[mode_name] = {"status": "failed",
-                                          "reason": "no audio segments"}
-                    continue
-
-                combined = np.concatenate(mode_iq_segments)
-                del mode_iq_segments
                 raw_windows = extract_windows(
                     combined, window_len=self.window_len,
                     stride=stride, power_threshold=power_threshold,

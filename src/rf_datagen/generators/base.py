@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 
 from .._state import shutdown_requested
-from ..config import GeneratorConfig, ImpairmentConfig, checkpoint_config_hash
+from ..config import GeneratorConfig, ImpairmentConfig, checkpoint_config_hash, raw_stream_config_hash
 from ..constants import FS, WINDOW_LEN
 from ..domains import DOMAINS
 from ..impairments import extract_windows, apply_impairments, configure_impairments
@@ -43,7 +43,15 @@ def _worker_generate_class(generator, class_name, ci, seed, parts_dir):
     if class_name in generator.synthesizers:
         raw_windows = generator.generate_windows(class_name, n_samples)
     else:
-        raw_iq = generator.generate_class(class_name)
+        # Two-tier cache: try raw stream cache before expensive generation
+        raw_iq = generator._load_raw_stream(parts_dir, class_name)
+        if raw_iq is not None:
+            log.info("%15s: loaded raw stream from cache (%d samples)",
+                     class_name, len(raw_iq))
+        else:
+            raw_iq = generator.generate_class(class_name)
+            if len(raw_iq) >= generator.window_len:
+                generator._save_raw_stream(parts_dir, class_name, raw_iq)
         if len(raw_iq) < generator.window_len:
             log.warning("%15s: FAILED (signal too short)", class_name)
             return class_name, {"status": "failed",
@@ -359,3 +367,31 @@ class BaseGenerator(ABC):
         except OSError as e:
             log.warning("Failed to write hash %s: %s "
                         "(checkpoint will regenerate next run)", hash_path, e)
+
+    def _raw_stream_hash(self, class_name):
+        """Compute hash for raw stream caching (excludes window/impairment params)."""
+        return raw_stream_config_hash(
+            self.config, class_name, fs=self.fs,
+            generator_name=self.name)
+
+    def _save_raw_stream(self, parts_dir, class_name, raw_iq):
+        """Save raw continuous IQ stream as complex64 + hash sidecar."""
+        raw_path = os.path.join(parts_dir, f"{class_name}_raw.npy")
+        hash_path = os.path.join(parts_dir, f"{class_name}_raw.hash")
+        atomic_save_npy(raw_path, raw_iq.astype(np.complex64))
+        self._write_hash(hash_path, self._raw_stream_hash(class_name))
+
+    def _load_raw_stream(self, parts_dir, class_name):
+        """Load cached raw stream if hash matches. Returns array or None."""
+        raw_path = os.path.join(parts_dir, f"{class_name}_raw.npy")
+        hash_path = os.path.join(parts_dir, f"{class_name}_raw.hash")
+        if not (os.path.exists(raw_path) and os.path.exists(hash_path)):
+            return None
+        try:
+            with open(hash_path) as f:
+                stored = f.read().strip()
+            if stored != self._raw_stream_hash(class_name):
+                return None
+            return np.load(raw_path)
+        except (OSError, ValueError):
+            return None
