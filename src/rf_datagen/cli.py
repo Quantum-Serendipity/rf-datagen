@@ -18,6 +18,7 @@ from .generators.base import BaseGenerator
 from . import _state
 from .logging_config import setup_logging, get_logger, shutdown_logging
 from .metrics import RunMetrics
+from .impairments import clear_interferer_pool
 from .output import assemble_parts, save_dataset, atomic_write_json
 from .progress import create_progress_tracker
 from . import pid_registry
@@ -316,6 +317,7 @@ def cmd_generate(args):
         n_windows = len(iq_data)
         save_dataset(iq_data, tags, scenarios, domain_dir, prefix=prefix,
                      snrs=snrs)
+        clear_interferer_pool()
 
         iq_path = os.path.join(domain_dir, f"{prefix}_iq.npy")
         if os.path.exists(iq_path):
@@ -567,6 +569,7 @@ def cmd_rewindow(args):
         n_windows = len(iq_data)
         save_dataset(iq_data, tags, scenarios, domain_dir, prefix=prefix,
                      snrs=snrs)
+        clear_interferer_pool()
 
         iq_path = os.path.join(domain_dir, f"{prefix}_iq.npy")
         if os.path.exists(iq_path):

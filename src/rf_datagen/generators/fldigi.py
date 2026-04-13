@@ -26,10 +26,11 @@ log = get_logger("fldigi")
 
 CAPTURE_FS = 48000
 MODE_TIMEOUT_MIN = 900  # floor: at least 15 minutes per mode
-MAX_CHUNK_TIMEOUT = 120  # 2 minutes max waiting for a single TX chunk
 CHUNK_CHARS = 500  # characters per TX chunk
 CADENCE_SPEED = 100  # compress typing sleeps — fldigi modulates at its own
                      # baud rate regardless of input timing
+
+_STOP_SENTINEL = object()  # poison pill for clean TX worker shutdown
 
 MODE_CHARS_PER_SEC = {
     "PSK31": 5, "PSK63": 10, "RTTY": 8, "OLIVIA": 3,
@@ -125,6 +126,7 @@ class FLDigiInstance:
         self._own_pa = None  # per-instance PulseAudio server
         self.fldigi_proc = None
         self.server = None
+        self._stderr_log = None
 
     def _make_env(self):
         env = self.pa_env.copy()
@@ -155,11 +157,12 @@ class FLDigiInstance:
             self._own_pa.__enter__()
             self.pa_env = self._own_pa.clean_env()
         env = self._make_env()
+        self._stderr_log = open(os.path.join(self.config_dir, "fldigi_stderr.log"), "a")
         self.fldigi_proc = subprocess.Popen(
             ["xvfb-run", "-a", "fldigi",
              "--config-dir", self.config_dir,
              "--xmlrpc-server-port", str(self.port)],
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env, stdout=subprocess.DEVNULL, stderr=self._stderr_log,
             start_new_session=True,
         )
         self.server = xmlrpc.client.ServerProxy(
@@ -192,11 +195,14 @@ class FLDigiInstance:
         self.stop()
         self._write_config()
         env = self._make_env()
+        if self._stderr_log:
+            self._stderr_log.close()
+        self._stderr_log = open(os.path.join(self.config_dir, "fldigi_stderr.log"), "a")
         self.fldigi_proc = subprocess.Popen(
             ["xvfb-run", "-a", "fldigi",
              "--config-dir", self.config_dir,
              "--xmlrpc-server-port", str(self.port)],
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env, stdout=subprocess.DEVNULL, stderr=self._stderr_log,
             start_new_session=True,
         )
         self.server = xmlrpc.client.ServerProxy(
@@ -224,8 +230,7 @@ class FLDigiInstance:
                 self.server.text.add_tx(chunk_text)
             self.server.main.tx()
             chars_per_sec = MODE_CHARS_PER_SEC.get(mode_name, 5)
-            est_secs = min(len(chunk_text) / chars_per_sec + 10.0,
-                           MAX_CHUNK_TIMEOUT)
+            est_secs = len(chunk_text) / chars_per_sec + 10.0
             deadline = time.time() + est_secs
             tx_started = False
             while time.time() < deadline:
@@ -340,6 +345,9 @@ class FLDigiInstance:
                 except (ProcessLookupError, PermissionError):
                     pass
                 self.fldigi_proc.wait()
+        if self._stderr_log:
+            self._stderr_log.close()
+            self._stderr_log = None
         if self._own_pa is not None:
             self._own_pa.__exit__(None, None, None)
             self._own_pa = None
@@ -547,6 +555,9 @@ class FldigiGenerator(BaseGenerator):
         total_chunks = work_queue.qsize()
         n_workers = max(1, min(max_workers, total_chunks))
 
+        for _ in range(n_workers):
+            work_queue.put(_STOP_SENTINEL)
+
         log.info("fldigi: %d uncached modes, %d chunks across %d instances",
                  len(uncached), total_chunks, n_workers)
         for mn in uncached:
@@ -617,26 +628,25 @@ class FldigiGenerator(BaseGenerator):
                     raw_chunks = audio_slots[mode_name]
                     audio_slots[mode_name] = None  # free ref
 
-                n_total = mode_info[mode_name]["n_chunks"]
+                    n_total = mode_info[mode_name]["n_chunks"]
 
-                def _do_postproc():
-                    name, result = self._postprocess_mode(
-                        mode_name, raw_chunks, n_total,
-                        parts_dir, stride, power_threshold)
-                    with results_lock:
-                        all_results[name] = result
+                    def _do_postproc():
+                        name, result = self._postprocess_mode(
+                            mode_name, raw_chunks, n_total,
+                            parts_dir, stride, power_threshold)
+                        with results_lock:
+                            all_results[name] = result
 
-                f = postproc_pool.submit(_do_postproc)
-                postproc_futures.append(f)
+                    f = postproc_pool.submit(_do_postproc)
+                    postproc_futures.append(f)
 
             def _tx_worker(worker_id, inst):
                 """Pull chunks from shared queue and TX them."""
                 consecutive_failures = 0
 
                 while not shutdown_requested():
-                    try:
-                        item = work_queue.get(timeout=2)
-                    except queue.Empty:
+                    item = work_queue.get()
+                    if item is _STOP_SENTINEL:
                         break
 
                     mode_name, chunk_idx, chunk_text, modem_name = item

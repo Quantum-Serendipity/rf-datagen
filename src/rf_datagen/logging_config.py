@@ -88,6 +88,7 @@ def setup_logging(output_dir=None, verbose=False, quiet=False):
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
+        structlog.stdlib.PositionalArgumentsFormatter(),
         _add_process_info,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
