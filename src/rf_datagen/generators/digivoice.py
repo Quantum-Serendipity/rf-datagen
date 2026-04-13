@@ -172,7 +172,7 @@ class DigivoiceGenerator(BaseGenerator):
     def generate_class(self, class_name, rng=None):
         raise NotImplementedError("Use run() for digivoice generation")
 
-    def run(self, output_dir, seed=42):
+    def run(self, output_dir, seed=42, **kwargs):
         # Pre-flight: skip entirely if all classes cached
         cached = self._check_all_cached(output_dir)
         if cached is not None:

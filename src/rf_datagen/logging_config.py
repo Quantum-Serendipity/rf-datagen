@@ -63,9 +63,6 @@ def setup_logging(output_dir=None, verbose=False, quiet=False):
 
     console = logging.StreamHandler(sys.stderr)
     console.setLevel(console_level)
-    console.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
-        datefmt="%H:%M:%S"))
     root.addHandler(console)
 
     # --- File handlers (if output_dir) -------------------------------------
@@ -76,29 +73,56 @@ def setup_logging(output_dir=None, verbose=False, quiet=False):
         log_path = os.path.join(output_dir, "generation.log")
         fh = logging.FileHandler(log_path, mode="a")
         fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"))
         root.addHandler(fh)
 
         # JSON-lines log (machine-parseable structured output)
         jsonl_path = os.path.join(output_dir, "generation.jsonl")
         jh = logging.FileHandler(jsonl_path, mode="a")
         jh.setLevel(logging.DEBUG)
-        jh.setFormatter(logging.Formatter("%(message)s"))
-        # JSON renderer attached below via structlog
 
     # --- structlog configuration -------------------------------------------
+    # Use render_to_log_kwargs so structlog renders the event string and
+    # passes it to stdlib's %-formatting.  This works with plain
+    # logging.Formatter on all handlers (console, file, QueueHandler).
     shared_processors = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
-        structlog.processors.TimeStamper(fmt="iso"),
         _add_process_info,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ]
+
+    # ProcessorFormatter renders the final output for each handler
+    console_formatter = structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty()),
+        ],
+        foreign_pre_chain=shared_processors[:-1],
+    )
+    console.setFormatter(console_formatter)
+
+    if output_dir:
+        plain_formatter = structlog.stdlib.ProcessorFormatter(
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.dev.ConsoleRenderer(colors=False),
+            ],
+            foreign_pre_chain=shared_processors[:-1],
+        )
+        fh.setFormatter(plain_formatter)
+
+        json_formatter = structlog.stdlib.ProcessorFormatter(
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                structlog.processors.JSONRenderer(),
+            ],
+            foreign_pre_chain=shared_processors[:-1],
+        )
+        jh.setFormatter(json_formatter)
+        root.addHandler(jh)
 
     structlog.configure(
         processors=shared_processors,

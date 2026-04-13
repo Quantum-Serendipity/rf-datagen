@@ -437,7 +437,7 @@ class FldigiGenerator(BaseGenerator):
         return mode_name, {"status": "ok", "samples": n_out,
                            "raw_windows": n_raw}
 
-    def run(self, output_dir, seed=42, port=7362):
+    def run(self, output_dir, seed=42, port=7362, **kwargs):
         """Chunk-level parallel generation across all fldigi instances.
 
         Instead of assigning whole modes to instances 1:1, pre-splits every
