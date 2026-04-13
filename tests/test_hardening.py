@@ -333,22 +333,20 @@ class TestConfigValidation:
 
 
 class TestConfigUnknownKeys:
-    def test_unknown_top_level(self, tmp, caplog):
+    def test_unknown_top_level(self, tmp, capsys):
         import tomllib
         path = os.path.join(tmp, "test.toml")
         with open(path, "w") as f:
             f.write('[typo_section]\nkey = 1\n')
-        with caplog.at_level("WARNING", logger="rf_datagen.config"):
-            load_config(path)
-        assert "typo_section" in caplog.text
+        load_config(path)
+        assert "typo_section" in capsys.readouterr().out
 
-    def test_unknown_dataset_key(self, tmp, caplog):
+    def test_unknown_dataset_key(self, tmp, capsys):
         path = os.path.join(tmp, "test.toml")
         with open(path, "w") as f:
             f.write('[dataset]\ntypo_key = 1\n')
-        with caplog.at_level("WARNING", logger="rf_datagen.config"):
-            load_config(path)
-        assert "typo_key" in caplog.text
+        load_config(path)
+        assert "typo_key" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -368,31 +366,29 @@ class TestAssembleParts:
         assert iq.shape == (10, WINDOW_LEN)
         assert tags == [label] * 10
 
-    def test_skips_wrong_shape(self, tmp, caplog):
+    def test_skips_wrong_shape(self, tmp, capsys):
         parts_dir = os.path.join(tmp, "parts")
         os.makedirs(parts_dir)
         from rf_datagen.constants import SIGNAL_LABELS
         label = SIGNAL_LABELS[0]
         arr = np.ones((10, 512), dtype=np.complex128)  # wrong width
         np.save(os.path.join(parts_dir, f"{label}.npy"), arr)
-        with caplog.at_level("WARNING", logger="rf_datagen.output"):
-            iq, tags, *_ = assemble_parts(tmp)
+        iq, tags, *_ = assemble_parts(tmp)
         assert len(iq) == 0
-        assert "wrong shape" in caplog.text
+        assert "wrong shape" in capsys.readouterr().out
 
-    def test_skips_non_complex(self, tmp, caplog):
+    def test_skips_non_complex(self, tmp, capsys):
         parts_dir = os.path.join(tmp, "parts")
         os.makedirs(parts_dir)
         from rf_datagen.constants import SIGNAL_LABELS, WINDOW_LEN
         label = SIGNAL_LABELS[0]
         arr = np.ones((10, WINDOW_LEN), dtype=np.float64)  # not complex
         np.save(os.path.join(parts_dir, f"{label}.npy"), arr)
-        with caplog.at_level("WARNING", logger="rf_datagen.output"):
-            iq, tags, *_ = assemble_parts(tmp)
+        iq, tags, *_ = assemble_parts(tmp)
         assert len(iq) == 0
-        assert "complex dtype" in caplog.text
+        assert "complex dtype" in capsys.readouterr().out
 
-    def test_skips_nan(self, tmp, caplog):
+    def test_skips_nan(self, tmp, capsys):
         parts_dir = os.path.join(tmp, "parts")
         os.makedirs(parts_dir)
         from rf_datagen.constants import SIGNAL_LABELS, WINDOW_LEN
@@ -400,10 +396,9 @@ class TestAssembleParts:
         arr = np.ones((10, WINDOW_LEN), dtype=np.complex128)
         arr[0, 0] = np.nan
         np.save(os.path.join(parts_dir, f"{label}.npy"), arr)
-        with caplog.at_level("WARNING", logger="rf_datagen.output"):
-            iq, tags, *_ = assemble_parts(tmp)
+        iq, tags, *_ = assemble_parts(tmp)
         assert len(iq) == 0
-        assert "NaN" in caplog.text
+        assert "NaN" in capsys.readouterr().out
 
     def test_empty_parts_dir(self, tmp):
         iq, tags, scenarios, _snrs = assemble_parts(tmp)
@@ -418,9 +413,10 @@ class TestAssembleParts:
 class TestLogging:
     def test_get_logger_namespace(self):
         log = get_logger("test_module")
-        assert log.name == "rf_datagen.test_module"
+        # structlog lazy proxy stores factory args with the logger name
+        assert log._logger_factory_args == ("rf_datagen.test_module",)
 
-    def test_loggers_share_root(self):
+    def test_loggers_independent(self):
         log1 = get_logger("a")
         log2 = get_logger("b")
-        assert log1.parent is log2.parent
+        assert log1._logger_factory_args != log2._logger_factory_args
