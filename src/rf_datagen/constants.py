@@ -12,3 +12,9 @@ SNR_LEVELS = [30, 25, 20, 15, 10, 5, 0]  # dB
 # Canonical signal labels — single source of truth in domains.py
 SIGNAL_LABELS = list(ALL_SIGNAL_LABELS)
 NUM_CLASSES = len(SIGNAL_LABELS)
+
+# Streaming threshold: outputs larger than this use memmap-backed
+# streaming impairments instead of in-memory arrays.  500 MB is a
+# safe default that avoids OOM for moderate/wideband domains while
+# keeping the faster in-memory path for narrowband.
+STREAMING_THRESHOLD = 500 * 1024 * 1024  # bytes

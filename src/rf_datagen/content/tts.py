@@ -10,6 +10,10 @@ import numpy as np
 
 from scipy.signal import butter, filtfilt
 
+from ..logging_config import get_logger
+
+log = get_logger("tts")
+
 
 PIPER_HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 
@@ -166,7 +170,8 @@ class TTSEngine:
                 nframes = wf.getnframes()
                 wav_fs = wf.getframerate()
                 raw = np.frombuffer(wf.readframes(nframes), dtype=np.int16)
-        except Exception:
+        except Exception as e:
+            log.debug("TTS synthesis failed: %s", e)
             return np.array([]), 0
         finally:
             try:
@@ -202,7 +207,8 @@ class TTSEngine:
                 nframes = wf.getnframes()
                 wav_fs = wf.getframerate()
                 raw = np.frombuffer(wf.readframes(nframes), dtype=np.int16)
-        except Exception:
+        except Exception as e:
+            log.debug("TTS synthesis failed: %s", e)
             return np.array([]), 0
         finally:
             try:

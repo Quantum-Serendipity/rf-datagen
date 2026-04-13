@@ -14,7 +14,10 @@ from ..constants import FS, WINDOW_LEN
 from ..dsp import audio_to_iq
 from ..content.ham_text import gen_ft8_message, gen_wspr_message
 from ..impairments import extract_windows, apply_impairments
+from ..logging_config import get_logger
 from .base import BaseGenerator
+
+log = get_logger("wsjtx")
 
 SYNTH_FS = 12000
 
@@ -210,7 +213,8 @@ def encode_wspr(message, tmpdir):
         if peak > 0:
             audio = audio * (0.5 / peak)
         return audio
-    except Exception:
+    except Exception as e:
+        log.debug("WSJTX audio generation failed: %s", e)
         return None
     finally:
         try:

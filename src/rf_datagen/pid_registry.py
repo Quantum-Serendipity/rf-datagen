@@ -148,16 +148,17 @@ def cleanup_stale(force=False):
             try:
                 shutil.rmtree(tmpdir)
                 log.debug("Removed stale tmpdir: %s", tmpdir)
-            except OSError:
-                pass
+            except OSError as e:
+                log.debug("Failed to remove stale tmpdir %s: %s", tmpdir, e)
         config_dir = child.get("config_dir")
         if config_dir and os.path.isdir(config_dir):
             import shutil
             try:
                 shutil.rmtree(config_dir)
                 log.debug("Removed stale config_dir: %s", config_dir)
-            except OSError:
-                pass
+            except OSError as e:
+                log.debug("Failed to remove stale config_dir %s: %s",
+                          config_dir, e)
 
     if killed > 0:
         log.info("Cleaned up %d orphaned processes", killed)

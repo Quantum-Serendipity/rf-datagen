@@ -260,15 +260,16 @@ class E2EPipeline:
                             total += 1
                             if ok:
                                 decodes += 1
-                        except Exception:
+                        except Exception as e:
+                            log.debug("Round-trip trial %s failed: %s", mode, e)
                             total += 1
             except Exception as e:
                 log.warning("Round-trip %s error: %s", mode, e)
             finally:
                 try:
                     inst.teardown()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("Round-trip teardown error: %s", e)
 
             rate = decodes / total if total > 0 else 0
             expected_fail = getattr(validator_cls, "expected_fail", False)
@@ -406,7 +407,8 @@ class E2EPipeline:
                             total += 1
                             if pred_class == expected:
                                 correct += 1
-                    except Exception:
+                    except Exception as e:
+                        log.debug("ML prediction failed for %s: %s", signal_name, e)
                         total += 1
 
                 accuracy = correct / total if total > 0 else 0

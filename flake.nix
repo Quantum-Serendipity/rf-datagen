@@ -58,6 +58,8 @@
             python3.pkgs.scipy
             python3.pkgs.pillow
             lib.pysstv
+            python3.pkgs.structlog
+            python3.pkgs.rich
           ];
           makeWrapperArgs = [
             "--prefix" "PATH" ":" (pkgs.lib.makeBinPath (lib.runtimeCliTools ++ [ pkgs.coreutils ]))
@@ -79,6 +81,8 @@
             python3.pkgs.scipy
             python3.pkgs.pillow
             lib.pysstv
+            python3.pkgs.structlog
+            python3.pkgs.rich
           ];
           doCheck = false;
         };
@@ -92,6 +96,7 @@
           ps.numpy ps.scipy ps.pillow ps.matplotlib
           ps.pytest
           lib.pysstv
+          ps.structlog ps.rich
         ]);
       in {
         default = pkgs.mkShellNoCC {

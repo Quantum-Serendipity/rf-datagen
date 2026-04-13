@@ -20,7 +20,9 @@ from .transmitter import TransmitterModel
 from .scenarios import (
     configure as configure_impairments,
     apply_scenario, apply_scenario_continuous,
-    apply_impairments, SCENARIO_NAMES,
+    apply_impairments, apply_impairments_streaming,
+    clear_interferer_pool,
+    SCENARIO_NAMES,
 )
 
 __all__ = [
@@ -32,6 +34,7 @@ __all__ = [
     "apply_clutter", "apply_ism_interference",
     "apply_noise_budget",
     "apply_scenario", "apply_scenario_continuous", "apply_impairments",
+    "apply_impairments_streaming", "clear_interferer_pool",
     "configure_impairments",
     "extract_windows", "TransmitterModel",
     "SCENARIO_NAMES",

@@ -7,6 +7,9 @@ import tempfile
 import time
 
 from . import pid_registry
+from .logging_config import get_logger
+
+log = get_logger("isolation")
 
 
 class IsolatedPulseServer:
@@ -74,8 +77,9 @@ class IsolatedPulseServer:
         try:
             pid_registry.register_child(
                 self._proc.pid, "pulseaudio", tmpdir=self._tmpdir)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Failed to register PulseAudio PID %d: %s",
+                      self._proc.pid, e)
 
         return self
 
@@ -83,8 +87,9 @@ class IsolatedPulseServer:
         if self._proc and self._proc.poll() is None:
             try:
                 pid_registry.unregister_child(self._proc.pid)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Failed to unregister PulseAudio PID %d: %s",
+                          self._proc.pid, e)
             self._proc.terminate()
             try:
                 self._proc.wait(timeout=5)

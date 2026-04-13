@@ -112,7 +112,15 @@ def _validate_checkpoint(windows, label, source, window_len):
         log.warning("Skipping %s/%s — expected complex dtype, got %s",
                     source, label, windows.dtype)
         return False
-    check_slice = windows[:min(100, len(windows))]
+    # Sample-based validation: first 100 + last 100 + 100 random rows
+    n = len(windows)
+    check_indices = list(range(min(100, n)))
+    check_indices.extend(range(max(0, n - 100), n))
+    if n > 200:
+        rng = np.random.RandomState(0)  # deterministic
+        check_indices.extend(rng.choice(n, min(100, n), replace=False))
+    check_indices = sorted(set(check_indices))
+    check_slice = windows[check_indices]
     if np.any(np.isnan(check_slice)) or np.any(np.isinf(check_slice)):
         log.warning("Skipping %s/%s — contains NaN or Inf values",
                     source, label)
@@ -148,7 +156,8 @@ def _load_meta(meta_path):
                 else:
                     snrs.append("")
             return scenarios, snrs
-    except Exception:
+    except Exception as e:
+        log.debug("Failed to load metadata CSV: %s", e)
         return [], []
 
 
@@ -181,6 +190,15 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
     parts_dir = os.path.join(output_dir, "parts")
     if not os.path.exists(parts_dir):
         return np.array([]), [], [], []
+
+    # Clean up stale temp files from previous crashed assembly
+    tmp_path = os.path.join(output_dir, ".assemble_tmp.npy")
+    if os.path.exists(tmp_path):
+        log.info("Removing stale assembly temp file: %s", tmp_path)
+        try:
+            os.remove(tmp_path)
+        except OSError as e:
+            log.warning("Failed to remove stale temp file: %s", e)
 
     # Discover generator subdirectories
     gen_dirs = sorted(
@@ -229,7 +247,8 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
             if os.path.exists(flat_path):
                 try:
                     windows = np.load(flat_path, mmap_mode='r')
-                except Exception:
+                except Exception as e:
+                    log.debug("Failed to load flat-dir checkpoint %s: %s", flat_path, e)
                     windows = None
                 if windows is not None and _validate_checkpoint(
                         windows, label, "flat", window_len):

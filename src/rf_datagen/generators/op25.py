@@ -59,7 +59,8 @@ def generate_dv_audio(raw_8k_path, protocol, tmpdir):
     try:
         raw = np.fromfile(out_path, dtype=np.int16)
         return raw.astype(np.float64) / 32768.0, rate
-    except Exception:
+    except Exception as e:
+        log.debug("op25 tx_imbe failed: %s", e)
         return np.array([]), 0
     finally:
         try:

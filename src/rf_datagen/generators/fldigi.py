@@ -243,8 +243,8 @@ class FLDigiInstance:
                 time.sleep(0.5)
             try:
                 self.server.main.rx()
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("rx() call failed after TX: %s", e)
             time.sleep(0.5)
         finally:
             if rec_proc is not None:
@@ -577,8 +577,8 @@ class FldigiGenerator(BaseGenerator):
                             inst.fldigi_proc.pid, "fldigi",
                             port=port + i,
                             config_dir=inst.config_dir)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("Failed to register fldigi PID: %s", e)
                 instances.append(inst)
 
             # Post-processing pool: cap concurrency by per-mode RAM cost.
@@ -649,9 +649,11 @@ class FldigiGenerator(BaseGenerator):
                         time.sleep(0.3)
                         try:
                             inst.server.modem.set_carrier(1500)
-                        except Exception:
-                            pass
-                    except Exception:
+                        except Exception as e:
+                            log.debug("set_carrier failed (non-fatal): %s", e)
+                    except Exception as e:
+                        log.warning("Instance %d: modem setup failed for %s: %s",
+                                    worker_id, modem_name, e)
                         consecutive_failures += 1
                         if consecutive_failures >= 10:
                             log.error("Instance %d: %d consecutive "
@@ -733,8 +735,8 @@ class FldigiGenerator(BaseGenerator):
                 try:
                     if inst.fldigi_proc:
                         pid_registry.unregister_child(inst.fldigi_proc.pid)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("Failed to unregister fldigi PID: %s", e)
                 inst.stop()
             shutil.rmtree(tmpdir, ignore_errors=True)
 

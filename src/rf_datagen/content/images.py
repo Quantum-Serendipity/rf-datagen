@@ -2,6 +2,10 @@
 
 import numpy as np
 
+from ..logging_config import get_logger
+
+log = get_logger("images")
+
 
 def random_image(width, height):
     """Generate a random test image for SSTV encoding."""
@@ -63,7 +67,7 @@ def random_image(width, height):
     call = np.random.choice(callsigns)
     try:
         draw.text((10, 10), call, fill=(255, 255, 0))
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("Failed to draw callsign text on image: %s", e)
 
     return img

@@ -13,6 +13,8 @@ dependencies = [
     "scipy>=1.10",
     "pillow>=9.0",
     "pysstv>=0.5",
+    "structlog>=24.1",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -32,3 +34,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: full pipeline tests (deselect with '-m not integration')",
+    "slow: tests that take >30 seconds (deselect with '-m not slow')",
+]

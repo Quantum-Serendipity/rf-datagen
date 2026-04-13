@@ -1,4 +1,5 @@
 .PHONY: generate generate-moderate generate-wideband generate-all list validate clean cleanup-orphans
+.PHONY: test test-unit test-integration test-slow test-all
 .PHONY: e2e e2e-quick e2e-validate e2e-ml
 .PHONY: validate-roundtrip validate-all validate-quick
 .PHONY: validate-wsjtx validate-packet validate-freedv validate-digivoice
@@ -164,6 +165,28 @@ qc-modulated:
 
 qc-text:
 	python -m rf_datagen.cli qc text --generator all
+
+# ---------------------------------------------------------------------------
+# Housekeeping
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------------------
+
+test: test-unit
+
+test-unit:
+	python -m pytest tests/ -m "not integration and not slow" -x -q
+
+test-integration:
+	python -m pytest tests/ -m "integration" -x -q --timeout=300
+
+test-slow:
+	python -m pytest tests/ -m "slow" -x -q --timeout=600
+
+test-all:
+	python -m pytest tests/ -x -q --timeout=600
 
 # ---------------------------------------------------------------------------
 # Housekeeping

@@ -10,21 +10,26 @@ import numpy as np
 
 from .._state import shutdown_requested
 from ..config import GeneratorConfig, ImpairmentConfig, checkpoint_config_hash, raw_stream_config_hash
-from ..constants import FS, WINDOW_LEN
+from ..constants import FS, WINDOW_LEN, STREAMING_THRESHOLD
 from ..domains import DOMAINS
-from ..impairments import extract_windows, apply_impairments, configure_impairments
-from ..logging_config import get_logger
+from ..impairments import extract_windows, apply_impairments, apply_impairments_streaming, configure_impairments
+from ..logging_config import get_logger, setup_worker_logging, bind_context, clear_context
 from ..output import atomic_save_npy, atomic_write_csv
 
 log = get_logger("generator")
 
 
-def _worker_generate_class(generator, class_name, ci, seed, parts_dir):
+def _worker_generate_class(generator, class_name, ci, seed, parts_dir,
+                           log_queue=None):
     """Process-pool worker: generate + impair + save one class.
 
     Called via fork so the generator object (with synthesizers, config,
     impairment state) is inherited from the parent process.
     """
+    if log_queue is not None:
+        setup_worker_logging(log_queue)
+    bind_context(generator=generator.name, class_name=class_name,
+                 worker_pid=os.getpid())
     n_samples = generator._boosted_count(class_name)
     npy_path = os.path.join(parts_dir, f"{class_name}.npy")
     meta_path = os.path.join(parts_dir, f"{class_name}_meta.csv")
@@ -71,26 +76,47 @@ def _worker_generate_class(generator, class_name, ci, seed, parts_dir):
         return class_name, {"status": "failed",
                             "reason": "no valid windows"}
 
-    samples, meta = apply_impairments(
-        raw_windows, n_samples, fs=generator.fs,
-        window_len=generator.window_len, return_metadata=True,
-        dtype=generator._dtype)
+    n_raw = len(raw_windows)
+    output_bytes = (n_samples * generator.window_len
+                    * np.dtype(generator._dtype).itemsize)
 
-    atomic_save_npy(npy_path, samples)
-    snrs = meta.get("snrs", [])
-    meta_rows = []
-    for i, s in enumerate(meta["scenarios"]):
-        snr = snrs[i] if i < len(snrs) else ""
-        meta_rows.append([s, snr])
+    if output_bytes > STREAMING_THRESHOLD:
+        # Large output: save raw windows to disk, stream impairments
+        # through memmap to avoid holding full output array on heap.
+        raw_path = os.path.join(parts_dir, f"{class_name}_raw_windows.npy")
+        atomic_save_npy(raw_path, raw_windows)
+        del raw_windows
+
+        npy_tmp = npy_path + ".tmp"
+        scenarios, snrs = apply_impairments_streaming(
+            raw_path, npy_tmp, n_samples,
+            fs=generator.fs, window_len=generator.window_len,
+            dtype=generator._dtype)
+        os.replace(npy_tmp, npy_path)
+
+        meta_rows = [[s, snr] for s, snr in zip(scenarios, snrs)]
+    else:
+        # Small output: in-memory path (faster)
+        samples, meta = apply_impairments(
+            raw_windows, n_samples, fs=generator.fs,
+            window_len=generator.window_len, return_metadata=True,
+            dtype=generator._dtype)
+
+        atomic_save_npy(npy_path, samples)
+        snrs = meta.get("snrs", [])
+        meta_rows = []
+        for i, s in enumerate(meta["scenarios"]):
+            snr = snrs[i] if i < len(snrs) else ""
+            meta_rows.append([s, snr])
+
     atomic_write_csv(meta_path, ["scenario", "snr"], meta_rows)
     generator._write_hash(hash_path, cfg_hash)
 
     elapsed = time.time() - t0
     size_mb = os.path.getsize(npy_path) / (1024 * 1024)
     log.info("%15s: %d raw -> %d samples (%.1fs, %.0f MB)",
-             class_name, len(raw_windows), n_samples, elapsed, size_mb)
+             class_name, n_raw, n_samples, elapsed, size_mb)
     return class_name, {"status": "ok", "samples": n_samples,
-                        "raw_windows": len(raw_windows),
                         "time_s": round(elapsed, 1)}
 
 
@@ -225,7 +251,7 @@ class BaseGenerator(ABC):
             windows = windows[:i]
         return windows
 
-    def run(self, output_dir, seed=42):
+    def run(self, output_dir, seed=42, log_queue=None):
         """Full pipeline: generate -> extract windows -> impair -> save.
 
         Returns a dict mapping class names to result info:
@@ -277,7 +303,8 @@ class BaseGenerator(ABC):
                 futures = {}
                 for ci, class_name in enumerate(classes):
                     f = pool.submit(_worker_generate_class,
-                                    self, class_name, ci, seed, parts_dir)
+                                    self, class_name, ci, seed, parts_dir,
+                                    log_queue=log_queue)
                     futures[f] = class_name
                 for f in as_completed(futures):
                     try:

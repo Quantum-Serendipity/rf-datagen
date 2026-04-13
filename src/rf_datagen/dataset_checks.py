@@ -192,7 +192,8 @@ def _check_domain(iq, tags_rows, tags_header, domain_name, domain,
                 gen_classes = set(gen.signal_classes)
                 if gen_classes & domain_labels_set:
                     gen_targets.append(gcfg.samples_per_class)
-            except Exception:
+            except Exception as e:
+                log.debug("Failed to intersect generator classes with domain: %s", e)
                 gen_targets.append(gcfg.samples_per_class)
         target = max(gen_targets) if gen_targets else domain.default_samples_per_class
         tolerance = 0.10  # ±10%

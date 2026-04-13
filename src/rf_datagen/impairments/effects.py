@@ -783,6 +783,11 @@ def extract_windows(iq_signal, window_len=WINDOW_LEN, stride=None,
                      dtype=np.complex128):
     """Extract non-silent training windows from a continuous IQ signal.
 
+    Uses a two-pass approach to avoid glibc arena fragmentation:
+    pass 1 counts valid windows, pass 2 fills a pre-allocated array
+    in-place.  This eliminates the 4+ GB of list-of-arrays heap
+    fragmentation that caused OOM kills with large window counts.
+
     Args:
         dtype: Output array dtype.  Defaults to complex128 for backward
                compat; pass np.complex64 to halve generation RAM at the
@@ -795,13 +800,28 @@ def extract_windows(iq_signal, window_len=WINDOW_LEN, stride=None,
         power_threshold = 0.001
     if len(iq_signal) < window_len:
         return np.zeros((0, window_len), dtype=dtype)
-    windows = []
+
+    # Pass 1: count valid windows (read-only, no allocations)
+    count = 0
     for start in range(0, len(iq_signal) - window_len + 1, stride):
         w = iq_signal[start:start + window_len]
         if np.mean(np.abs(w) ** 2) > power_threshold:
-            windows.append(normalize_power(w))
-            if max_windows > 0 and len(windows) >= max_windows:
+            count += 1
+            if max_windows > 0 and count >= max_windows:
                 break
-    if not windows:
+
+    if count == 0:
         return np.zeros((0, window_len), dtype=dtype)
-    return np.asarray(windows, dtype=dtype)
+
+    # Pass 2: fill pre-allocated array in-place
+    result = np.zeros((count, window_len), dtype=dtype)
+    idx = 0
+    for start in range(0, len(iq_signal) - window_len + 1, stride):
+        w = iq_signal[start:start + window_len]
+        if np.mean(np.abs(w) ** 2) > power_threshold:
+            result[idx] = normalize_power(w)
+            idx += 1
+            if idx >= count:
+                break
+
+    return result

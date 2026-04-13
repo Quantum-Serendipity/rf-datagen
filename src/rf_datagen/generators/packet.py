@@ -12,7 +12,10 @@ from scipy.signal import resample
 from ..constants import FS, WINDOW_LEN
 from ..dsp import audio_to_iq
 from ..content.ham_text import gen_packet_content
+from ..logging_config import get_logger
 from .base import BaseGenerator
+
+log = get_logger("packet")
 
 GEN_AUDIO_FS = 44100
 PACKET_BAUDS = [300, 1200, 9600]
@@ -35,7 +38,8 @@ def generate_packets(baud, n_packets=50, tmpdir="/tmp"):
             nframes = wf.getnframes()
             raw = np.frombuffer(wf.readframes(nframes), dtype=np.int16)
         audio = raw.astype(np.float64) / 32768.0
-    except Exception:
+    except Exception as e:
+        log.debug("Packet audio read failed: %s", e)
         return np.array([])
     finally:
         try:

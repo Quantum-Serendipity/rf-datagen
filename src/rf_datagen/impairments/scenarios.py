@@ -648,3 +648,71 @@ def apply_impairments(raw_windows, target_count, fs=FS, window_len=WINDOW_LEN,
     if return_metadata:
         return samples, {"scenarios": scenarios, "snrs": snr_labels}
     return samples
+
+
+IMPAIRMENT_BATCH_SIZE = 64
+
+
+def apply_impairments_streaming(raw_windows_path, output_path,
+                                target_count, fs=FS, window_len=WINDOW_LEN,
+                                dtype=np.complex64):
+    """Stream impairments from a raw-windows memmap to an output memmap.
+
+    Reads random windows from ``raw_windows_path`` (via OS page cache),
+    applies scenario-based impairments, and writes results in batches
+    of IMPAIRMENT_BATCH_SIZE to ``output_path``.
+
+    Heap memory: batch buffer = BATCH x window_len x itemsize.
+    At batch=64, window_len=12000, complex64: ~6 MB.
+
+    Returns:
+        (scenarios, snrs): Lists of scenario names and SNR values,
+        one per output sample.
+    """
+    raw = np.load(raw_windows_path, mmap_mode='r')
+    n_raw = len(raw)
+    if n_raw == 0:
+        return [], []
+
+    output = np.lib.format.open_memmap(
+        output_path, mode='w+', dtype=dtype,
+        shape=(target_count, window_len))
+
+    snr_levels = _config.snr_levels
+    snr_per = target_count // len(snr_levels)
+    scenarios = []
+    snr_labels = []
+    idx = 0
+
+    batch = np.zeros((IMPAIRMENT_BATCH_SIZE, window_len), dtype=dtype)
+    batch_idx = 0
+
+    for snr_i, snr_db in enumerate(snr_levels):
+        count = (snr_per if snr_i < len(snr_levels) - 1
+                 else target_count - idx)
+        for _ in range(count):
+            w = raw[np.random.randint(n_raw)].copy()
+            impaired, scenario_name = apply_scenario(w, snr_db, fs)
+            batch[batch_idx] = impaired
+            scenarios.append(scenario_name)
+            snr_labels.append(snr_db)
+            batch_idx += 1
+            idx += 1
+
+            if batch_idx == IMPAIRMENT_BATCH_SIZE:
+                output[idx - IMPAIRMENT_BATCH_SIZE:idx] = batch
+                batch_idx = 0
+
+    # Flush remainder
+    if batch_idx > 0:
+        output[idx - batch_idx:idx] = batch[:batch_idx]
+
+    output.flush()
+    del output, raw
+    return scenarios, snr_labels
+
+
+def clear_interferer_pool():
+    """Explicitly free the interferer pool to reclaim memory."""
+    global _INTERFERER_POOL
+    _INTERFERER_POOL = None

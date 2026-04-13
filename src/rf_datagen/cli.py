@@ -16,8 +16,10 @@ from .domains import DOMAINS, labels_for_domain, SIGNAL_DOMAIN_MAP
 from .generators import GENERATORS
 from .generators.base import BaseGenerator
 from . import _state
-from .logging_config import setup_logging, get_logger
+from .logging_config import setup_logging, get_logger, shutdown_logging
+from .metrics import RunMetrics
 from .output import assemble_parts, save_dataset, atomic_write_json
+from .progress import create_progress_tracker
 from . import pid_registry
 
 log = get_logger("cli")
@@ -129,6 +131,9 @@ def cmd_generate(args):
     log.info("Generating across %d classes using: %s", total_classes, gen_list)
     log.info("Output: %s", output_dir)
 
+    metrics = RunMetrics()
+    progress = create_progress_tracker(total_classes)
+
     # Install graceful shutdown handler
     _state.reset_shutdown()
     prev_sigint = signal.getsignal(signal.SIGINT)
@@ -200,6 +205,9 @@ def cmd_generate(args):
             #
             # All three lanes overlap, so fldigi TX, TTS synthesis, and
             # fork-based encoding all progress simultaneously.
+            from .logging_config import get_log_queue
+            _log_queue = get_log_queue()
+
             def _run_generator(task):
                 name, domain_gen = task
                 if _state.shutdown_requested():
@@ -208,7 +216,8 @@ def cmd_generate(args):
                 log.info("[%s] %s: %d classes",
                          domain_name, name, len(domain_gen.signal_classes))
                 return domain_gen.run(domain_dir,
-                                      seed=cfg.dataset.seed) or {}
+                                      seed=cfg.dataset.seed,
+                                      log_queue=_log_queue) or {}
 
             io_bound = []
             inproc = []
@@ -249,16 +258,22 @@ def cmd_generate(args):
                     try:
                         gen_results = future.result()
                         all_results.update(gen_results)
+                        # Update metrics and progress from results
+                        for cls_name, info in gen_results.items():
+                            metrics.update_from_results(
+                                lane_name, {cls_name: info})
+                            progress.update(cls_name, info.get("status", "ok"))
                     except Exception as e:
                         log.error("Generator lane %s failed: %s",
                                   lane_name, e)
     finally:
         signal.signal(signal.SIGINT, prev_sigint)
         signal.signal(signal.SIGTERM, prev_sigterm)
+        progress.finish()
         try:
             pid_registry.remove_registry()
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Failed to remove PID registry: %s", e)
 
     # Assemble — one dataset per domain
     total_windows = 0
@@ -352,6 +367,26 @@ def cmd_generate(args):
     }
     report_path = os.path.join(output_dir, "generation_report.json")
     atomic_write_json(report_path, report)
+
+    # Save structured metrics
+    metrics.save(output_dir)
+
+    # Structured run summary
+    ms = metrics.summary()
+    log.info("=== GENERATION COMPLETE ===")
+    log.info("Duration:    %.0fs", ms["duration_s"])
+    log.info("Classes:     %d ok, %d cached, %d failed / %d total",
+             ms["classes_ok"], ms["classes_cached"], ms["classes_failed"],
+             ms["classes_total"])
+    log.info("Samples:     %d (%d/s)", ms["total_samples"],
+             ms["samples_per_second"])
+    log.info("Output:      %s (%.1f MB)", output_dir, total_size_mb)
+    if ms["failures"]:
+        log.info("FAILED:")
+        for cls, reason in sorted(ms["failures"].items()):
+            log.info("  %15s: %s", cls, reason)
+
+    shutdown_logging()
 
     if all_diversity_warnings:
         log.error("DIVERSITY CHECK FAILED — %d classes have low signal "
