@@ -75,7 +75,12 @@ def load_checkpoint(class_name, output_dir):
     """Load per-class checkpoint if it exists. Returns array or None."""
     path = os.path.join(output_dir, "parts", f"{class_name}.npy")
     if os.path.exists(path):
-        return np.load(path)
+        try:
+            return np.load(path)
+        except Exception as e:
+            log.warning("Corrupted checkpoint %s, will regenerate: %s",
+                        path, e)
+            return None
     return None
 
 
@@ -157,7 +162,7 @@ def _load_meta(meta_path):
                     snrs.append("")
             return scenarios, snrs
     except Exception as e:
-        log.debug("Failed to load metadata CSV: %s", e)
+        log.warning("Failed to load metadata CSV %s: %s", meta_path, e)
         return [], []
 
 

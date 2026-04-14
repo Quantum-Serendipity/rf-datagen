@@ -1,5 +1,6 @@
 """PID registry for tracking child processes and cleaning up orphans."""
 
+import atexit
 import fcntl
 import json
 import os
@@ -175,3 +176,17 @@ def remove_registry():
         os.remove(_REGISTRY_PATH)
     except OSError:
         pass
+
+
+def _atexit_cleanup():
+    """Best-effort cleanup on process exit."""
+    data = _read_registry()
+    if data is None:
+        return
+    parent_pid = data.get("parent_pid")
+    if parent_pid == os.getpid():
+        # We're the owner — clean up our children
+        cleanup_stale(force=True)
+
+
+atexit.register(_atexit_cleanup)

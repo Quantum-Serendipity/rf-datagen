@@ -158,16 +158,21 @@ class FLDigiInstance:
             self.pa_env = self._own_pa.clean_env()
         env = self._make_env()
         self._stderr_log = open(os.path.join(self.config_dir, "fldigi_stderr.log"), "a")
-        self.fldigi_proc = subprocess.Popen(
-            ["xvfb-run", "-a", "fldigi",
-             "--config-dir", self.config_dir,
-             "--xmlrpc-server-port", str(self.port)],
-            env=env, stdout=subprocess.DEVNULL, stderr=self._stderr_log,
-            start_new_session=True,
-        )
-        self.server = xmlrpc.client.ServerProxy(
-            f"http://127.0.0.1:{self.port}")
-        self._wait_ready()
+        try:
+            self.fldigi_proc = subprocess.Popen(
+                ["xvfb-run", "-a", "fldigi",
+                 "--config-dir", self.config_dir,
+                 "--xmlrpc-server-port", str(self.port)],
+                env=env, stdout=subprocess.DEVNULL, stderr=self._stderr_log,
+                start_new_session=True,
+            )
+            self.server = xmlrpc.client.ServerProxy(
+                f"http://127.0.0.1:{self.port}")
+            self._wait_ready()
+        except Exception:
+            self._stderr_log.close()
+            self._stderr_log = None
+            raise
 
     def _wait_ready(self, timeout=60):
         deadline = time.time() + timeout
@@ -198,16 +203,21 @@ class FLDigiInstance:
         if self._stderr_log:
             self._stderr_log.close()
         self._stderr_log = open(os.path.join(self.config_dir, "fldigi_stderr.log"), "a")
-        self.fldigi_proc = subprocess.Popen(
-            ["xvfb-run", "-a", "fldigi",
-             "--config-dir", self.config_dir,
-             "--xmlrpc-server-port", str(self.port)],
-            env=env, stdout=subprocess.DEVNULL, stderr=self._stderr_log,
-            start_new_session=True,
-        )
-        self.server = xmlrpc.client.ServerProxy(
-            f"http://127.0.0.1:{self.port}")
-        self._wait_ready()
+        try:
+            self.fldigi_proc = subprocess.Popen(
+                ["xvfb-run", "-a", "fldigi",
+                 "--config-dir", self.config_dir,
+                 "--xmlrpc-server-port", str(self.port)],
+                env=env, stdout=subprocess.DEVNULL, stderr=self._stderr_log,
+                start_new_session=True,
+            )
+            self.server = xmlrpc.client.ServerProxy(
+                f"http://127.0.0.1:{self.port}")
+            self._wait_ready()
+        except Exception:
+            self._stderr_log.close()
+            self._stderr_log = None
+            raise
 
     def _tx_chunk(self, mode_name, chunk_text, cadence=None):
         audio_path = os.path.join(self.audio_dir, f"{mode_name}_chunk.raw")
@@ -645,7 +655,12 @@ class FldigiGenerator(BaseGenerator):
                 consecutive_failures = 0
 
                 while not shutdown_requested():
-                    item = work_queue.get()
+                    try:
+                        item = work_queue.get(timeout=10)
+                    except queue.Empty:
+                        if shutdown_requested():
+                            break
+                        continue
                     if item is _STOP_SENTINEL:
                         break
 

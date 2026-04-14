@@ -11,7 +11,10 @@ import numpy as np
 from ..constants import FS
 from ..dsp import audio_to_iq
 from ..content.ham_text import CW_PHRASES
+from ..logging_config import get_logger
 from .base import BaseGenerator
+
+log = get_logger("cw")
 
 
 def _get_cw_text():
@@ -48,7 +51,8 @@ def _generate_ebook2cw(text, wpm, tone_freq, tmpdir):
             nframes = wf.getnframes()
             raw = np.frombuffer(wf.readframes(nframes), dtype=np.int16)
         return raw.astype(np.float64) / 32768.0
-    except Exception:
+    except Exception as e:
+        log.warning("CW tool failed: %s", e)
         return np.array([])
     finally:
         try:
@@ -79,7 +83,8 @@ def _generate_cwwav(text, wpm, tone_freq, tmpdir):
             nframes = wf.getnframes()
             raw = np.frombuffer(wf.readframes(nframes), dtype=np.int16)
         return raw.astype(np.float64) / 32768.0
-    except Exception:
+    except Exception as e:
+        log.warning("CW tool failed: %s", e)
         return np.array([])
     finally:
         try:

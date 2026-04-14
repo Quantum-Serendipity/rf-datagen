@@ -48,6 +48,9 @@ class IsolatedPulseServer:
         # when running multiple PA instances.
         pa_env.pop("DBUS_SESSION_BUS_ADDRESS", None)
         pa_env["DBUS_SESSION_BUS_ADDRESS"] = "disabled:"
+        # Redirect stderr to file to avoid pipe buffer deadlock
+        self._stderr_path = os.path.join(self._tmpdir, "pulseaudio.stderr")
+        self._stderr_file = open(self._stderr_path, "w")
         self._proc = subprocess.Popen(
             ["pulseaudio",
              "--daemonize=false",
@@ -58,7 +61,7 @@ class IsolatedPulseServer:
              "--log-level=error"],
             env=pa_env,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=self._stderr_file,
         )
 
         deadline = time.time() + 10
@@ -66,7 +69,11 @@ class IsolatedPulseServer:
             if os.path.exists(self._socket_path):
                 break
             if self._proc.poll() is not None:
-                stderr = self._proc.stderr.read().decode()
+                self._stderr_file.close()
+                try:
+                    stderr = open(self._stderr_path).read()
+                except OSError:
+                    stderr = "(could not read stderr)"
                 raise RuntimeError(
                     f"Isolated PulseAudio exited: {stderr}")
             time.sleep(0.1)
@@ -84,6 +91,11 @@ class IsolatedPulseServer:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if hasattr(self, '_stderr_file') and self._stderr_file:
+            try:
+                self._stderr_file.close()
+            except OSError:
+                pass
         if self._proc and self._proc.poll() is None:
             try:
                 pid_registry.unregister_child(self._proc.pid)

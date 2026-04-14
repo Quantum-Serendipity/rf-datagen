@@ -11,7 +11,10 @@ import numpy as np
 from ..constants import FS
 from ..dsp import audio_to_iq
 from ..content.ham_text import gen_same_message
+from ..logging_config import get_logger
 from .base import BaseGenerator
+
+log = get_logger("sameeas")
 
 SAMEEAS_FS = 22050  # typical sameeas output rate
 
@@ -39,8 +42,8 @@ def generate_same_signal(message):
             if isinstance(audio, bytes):
                 audio = np.frombuffer(audio, dtype=np.int16)
             return audio.astype(np.float64) / 32768.0, sr
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("SAME/EAS generation failed: %s", e)
 
     # Fallback: try CLI script
     tmpdir = tempfile.mkdtemp(prefix="sameeas_")
@@ -59,7 +62,8 @@ def generate_same_signal(message):
             nframes = wf.getnframes()
             raw = np.frombuffer(wf.readframes(nframes), dtype=np.int16)
         return raw.astype(np.float64) / 32768.0, sr
-    except (subprocess.TimeoutExpired, OSError, Exception):
+    except Exception as e:
+        log.warning("SAME/EAS CLI fallback failed: %s", e)
         return np.array([]), 0
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

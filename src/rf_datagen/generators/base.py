@@ -102,6 +102,13 @@ def _worker_generate_class(generator, class_name, ci, seed, parts_dir,
             window_len=generator.window_len, return_metadata=True,
             dtype=generator._dtype)
 
+        # Validate output before saving — catch NaN/Inf from bad impairments
+        if np.any(np.isnan(samples)) or np.any(np.isinf(samples)):
+            log.warning("%15s: impairment output contains NaN/Inf, "
+                        "regenerating without cache", class_name)
+            return class_name, {"status": "failed",
+                                "reason": "NaN/Inf in impairment output"}
+
         atomic_save_npy(npy_path, samples)
         snrs = meta.get("snrs", [])
         meta_rows = []
@@ -377,7 +384,8 @@ class BaseGenerator(ABC):
             return False
         try:
             existing = np.load(npy_path, mmap_mode="r")
-        except Exception:
+        except Exception as e:
+            log.warning("Failed to load checkpoint %s: %s", npy_path, e)
             return False
         if existing.shape[0] != n_samples:
             return False
@@ -387,7 +395,8 @@ class BaseGenerator(ABC):
             with open(hash_path) as f:
                 stored = f.read().strip()
             return stored == expected_hash
-        except OSError:
+        except OSError as e:
+            log.warning("Failed to read hash file %s: %s", hash_path, e)
             return False
 
     @staticmethod
@@ -425,5 +434,6 @@ class BaseGenerator(ABC):
             if stored != self._raw_stream_hash(class_name):
                 return None
             return np.load(raw_path)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as e:
+            log.warning("Failed to load raw stream %s: %s", raw_path, e)
             return None

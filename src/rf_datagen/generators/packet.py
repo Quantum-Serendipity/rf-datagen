@@ -39,7 +39,7 @@ def generate_packets(baud, n_packets=50, tmpdir="/tmp"):
             raw = np.frombuffer(wf.readframes(nframes), dtype=np.int16)
         audio = raw.astype(np.float64) / 32768.0
     except Exception as e:
-        log.debug("Packet audio read failed: %s", e)
+        log.warning("Packet audio read failed: %s", e)
         return np.array([])
     finally:
         try:

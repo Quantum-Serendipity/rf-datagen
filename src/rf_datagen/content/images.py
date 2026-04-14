@@ -68,6 +68,6 @@ def random_image(width, height):
     try:
         draw.text((10, 10), call, fill=(255, 255, 0))
     except Exception as e:
-        log.debug("Failed to draw callsign text on image: %s", e)
+        log.warning("Failed to draw callsign text on image: %s", e)
 
     return img

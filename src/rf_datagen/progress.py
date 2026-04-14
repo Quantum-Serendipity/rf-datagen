@@ -110,6 +110,6 @@ def create_progress_tracker(total_classes):
     try:
         if sys.stderr.isatty():
             return RichProgressTracker(total_classes)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Rich progress tracker unavailable: %s", e)
     return LogProgressTracker(total_classes)

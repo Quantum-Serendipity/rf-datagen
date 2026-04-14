@@ -214,7 +214,7 @@ def encode_wspr(message, tmpdir):
             audio = audio * (0.5 / peak)
         return audio
     except Exception as e:
-        log.debug("WSJTX audio generation failed: %s", e)
+        log.warning("WSJTX audio generation failed: %s", e)
         return None
     finally:
         try:

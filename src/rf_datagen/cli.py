@@ -142,7 +142,11 @@ def cmd_generate(args):
 
     def _handle_shutdown(signum, frame):
         if _state.shutdown_requested():
-            # Second signal — force exit
+            # Second signal — force kill children and exit
+            try:
+                pid_registry.cleanup_stale(force=True)
+            except Exception:
+                pass
             sys.exit(1)
         _state.request_shutdown()
         sig_name = signal.Signals(signum).name
@@ -275,6 +279,7 @@ def cmd_generate(args):
             pid_registry.remove_registry()
         except Exception as e:
             log.debug("Failed to remove PID registry: %s", e)
+        shutdown_logging()
 
     # Assemble — one dataset per domain
     total_windows = 0
@@ -388,8 +393,6 @@ def cmd_generate(args):
         for cls, reason in sorted(ms["failures"].items()):
             log.info("  %15s: %s", cls, reason)
 
-    shutdown_logging()
-
     if all_diversity_warnings:
         log.error("DIVERSITY CHECK FAILED — %d classes have low signal "
                   "diversity. Training on this data will produce a bad model.",
@@ -501,7 +504,7 @@ def cmd_rewindow(args):
 
                 # Load raw stream and re-window
                 try:
-                    raw_iq = np.load(raw_path)
+                    raw_iq = np.load(raw_path, mmap_mode='r')
                 except Exception as e:
                     log.warning("%15s: failed to load raw stream: %s",
                                 class_name, e)
@@ -627,7 +630,7 @@ def cmd_validate(args):
             print(f"  ERROR: {e}")
         return 1
 
-    iq = np.load(iq_path)
+    iq = np.load(iq_path, mmap_mode='r')
     print(f"IQ data: {iq.shape}, dtype={iq.dtype}")
 
     if iq.ndim != 2:
@@ -780,7 +783,7 @@ def cmd_inspect(args):
         print(f"Dataset not found in {data_dir}")
         return 1
 
-    iq = np.load(iq_path)
+    iq = np.load(iq_path, mmap_mode='r')
 
     import csv
     with open(csv_path) as f:

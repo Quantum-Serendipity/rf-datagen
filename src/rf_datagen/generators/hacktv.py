@@ -82,7 +82,8 @@ def generate_hacktv_iq(standard, pattern, tmpdir, duration_s=2.0):
 
         return iq
 
-    except Exception:
+    except Exception as e:
+        log.warning("HackTV IQ processing failed: %s", e)
         return np.array([], dtype=np.complex128)
     finally:
         try:

@@ -91,7 +91,7 @@ def _download_voice(model_name, hf_subpath, cache_dir):
             print(f"    Downloading {model_name}{suffix} ...", flush=True)
             urllib.request.urlretrieve(url, local_path)
         except Exception as e:
-            print(f"    FAILED: {e}")
+            log.warning("Voice download failed for %s: %s", model_name, e)
             for p in (onnx_path, json_path):
                 try:
                     os.remove(p)
@@ -171,7 +171,7 @@ class TTSEngine:
                 wav_fs = wf.getframerate()
                 raw = np.frombuffer(wf.readframes(nframes), dtype=np.int16)
         except Exception as e:
-            log.debug("TTS synthesis failed: %s", e)
+            log.warning("TTS synthesis failed: %s", e)
             return np.array([]), 0
         finally:
             try:
@@ -208,7 +208,7 @@ class TTSEngine:
                 wav_fs = wf.getframerate()
                 raw = np.frombuffer(wf.readframes(nframes), dtype=np.int16)
         except Exception as e:
-            log.debug("TTS synthesis failed: %s", e)
+            log.warning("TTS synthesis failed: %s", e)
             return np.array([]), 0
         finally:
             try:

@@ -10,7 +10,10 @@ from ..constants import FS, WINDOW_LEN
 from ..dsp import hilbert_analytic, audio_to_iq
 from ..content.images import random_image
 from ..impairments import extract_windows, apply_impairments
+from ..logging_config import get_logger
 from .base import BaseGenerator
+
+log = get_logger("sstv")
 
 SSTV_AUDIO_FS = 48000
 
@@ -61,7 +64,8 @@ class SstvGenerator(BaseGenerator):
                     iq = audio_to_iq(audio, SSTV_AUDIO_FS, target_fs=self.fs)
                     if len(iq) >= self.window_len:
                         all_iq_segments.append(iq)
-                except Exception:
+                except Exception as e:
+                    log.warning("SSTV encode failed for mode %s: %s", mode_name, e)
                     continue
         if not all_iq_segments:
             return np.array([], dtype=np.complex128)

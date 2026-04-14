@@ -158,7 +158,8 @@ class ArdopGenerator(BaseGenerator):
                 nframes = wf.getnframes()
                 raw = np.frombuffer(wf.readframes(nframes), dtype=np.int16)
             return raw.astype(np.float64) / 32768.0
-        except Exception:
+        except Exception as e:
+            log.warning("ARDOP WAV read failed: %s", e)
             return np.array([])
         finally:
             try:

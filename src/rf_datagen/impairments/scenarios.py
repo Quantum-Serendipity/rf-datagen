@@ -56,7 +56,7 @@ def load_interferer_pool(data_dir):
     if not os.path.exists(iq_path) or not os.path.exists(tags_path):
         return None
 
-    iq_data = np.load(iq_path)
+    iq_data = np.load(iq_path, mmap_mode='r')
     with open(tags_path, "r") as f:
         tags = [line.strip() for line in f if line.strip()]
 
