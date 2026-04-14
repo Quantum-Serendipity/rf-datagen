@@ -76,7 +76,7 @@ def load_checkpoint(class_name, output_dir):
     path = os.path.join(output_dir, "parts", f"{class_name}.npy")
     if os.path.exists(path):
         try:
-            return np.load(path)
+            return np.load(path, mmap_mode='r')
         except Exception as e:
             log.warning("Corrupted checkpoint %s, will regenerate: %s",
                         path, e)

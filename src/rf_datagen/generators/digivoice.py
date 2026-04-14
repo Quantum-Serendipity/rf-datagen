@@ -9,14 +9,14 @@ import wave
 import numpy as np
 from scipy.signal import resample
 
-from ..constants import FS, WINDOW_LEN
+from ..constants import FS, WINDOW_LEN, STREAMING_THRESHOLD
 from ..dsp import audio_to_iq, _4fsk_mod, _gmsk_mod
 from ..dsp.filters import rrc_filter
 from ..content.ham_text import gen_speech_text
 from ..content.tts import (TTSEngine, apply_ptt_transients, apply_mic_effects,
                             apply_tx_audio_clipping)
 from ..protocols import frame_dmr, frame_dstar, frame_ysf, frame_p25, frame_nxdn
-from ..impairments import extract_windows, apply_impairments, configure_impairments
+from ..impairments import extract_windows, apply_impairments, apply_impairments_streaming, configure_impairments
 from ..logging_config import get_logger
 from ..output import atomic_save_npy, atomic_write_csv
 from .base import BaseGenerator
@@ -281,25 +281,47 @@ class DigivoiceGenerator(BaseGenerator):
                                           "reason": "no valid windows"}
                     continue
 
-                samples, meta = apply_impairments(
-                    raw_windows, n_samples, fs=self.fs,
-                    window_len=self.window_len, return_metadata=True,
-                    dtype=np.complex64)
+                n_raw = len(raw_windows)
+                output_bytes = n_samples * self.window_len * np.dtype(np.complex64).itemsize
 
-                atomic_save_npy(npy_path, samples)
-                snrs = meta.get("snrs", [])
-                meta_rows = []
-                for i, s in enumerate(meta["scenarios"]):
-                    snr = snrs[i] if i < len(snrs) else ""
-                    meta_rows.append([s, snr])
+                if output_bytes > STREAMING_THRESHOLD:
+                    raw_win_path = os.path.join(parts_dir, f"{mode_name}_raw_windows.npy")
+                    atomic_save_npy(raw_win_path, raw_windows)
+                    del raw_windows
+
+                    npy_tmp = npy_path + ".tmp"
+                    scenarios, snrs = apply_impairments_streaming(
+                        raw_win_path, npy_tmp, n_samples,
+                        fs=self.fs, window_len=self.window_len,
+                        dtype=np.complex64)
+                    os.replace(npy_tmp, npy_path)
+
+                    meta_rows = [[s, snr] for s, snr in zip(scenarios, snrs)]
+                    n_out = n_samples
+                else:
+                    samples, meta = apply_impairments(
+                        raw_windows, n_samples, fs=self.fs,
+                        window_len=self.window_len, return_metadata=True,
+                        dtype=np.complex64)
+                    del raw_windows
+                    n_out = len(samples)
+
+                    atomic_save_npy(npy_path, samples)
+                    snrs = meta.get("snrs", [])
+                    meta_rows = []
+                    for i, s in enumerate(meta["scenarios"]):
+                        snr = snrs[i] if i < len(snrs) else ""
+                        meta_rows.append([s, snr])
+                    del samples, meta
+
                 atomic_write_csv(meta_path, ["scenario", "snr"], meta_rows)
                 self._write_hash(hash_path, cfg_hash)
 
                 log.info("%15s: %d raw -> %d samples",
-                         mode_name, len(raw_windows), len(samples))
+                         mode_name, n_raw, n_out)
                 results[mode_name] = {"status": "ok",
-                                      "samples": len(samples),
-                                      "raw_windows": len(raw_windows)}
+                                      "samples": n_out,
+                                      "raw_windows": n_raw}
 
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)

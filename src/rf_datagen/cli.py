@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import load_config, GeneratorConfig
-from .constants import SIGNAL_LABELS
+from .constants import SIGNAL_LABELS, STREAMING_THRESHOLD
 from .domains import DOMAINS, labels_for_domain, SIGNAL_DOMAIN_MAP
 from .generators import GENERATORS
 from .generators.base import BaseGenerator
@@ -422,7 +422,7 @@ def cmd_rewindow(args):
     setup_logging(verbose=args.verbose, quiet=args.quiet)
     np.random.seed(cfg.dataset.seed)
 
-    from .impairments import extract_windows, apply_impairments, configure_impairments
+    from .impairments import extract_windows, apply_impairments, apply_impairments_streaming, configure_impairments
     from .config import checkpoint_config_hash, ImpairmentConfig
     from .output import atomic_save_npy, atomic_write_csv
 
@@ -536,24 +536,45 @@ def cmd_rewindow(args):
                                 class_name)
                     continue
 
-                samples, meta = apply_impairments(
-                    raw_windows, n_samples,
-                    fs=domain.sample_rate, window_len=window_len,
-                    return_metadata=True, dtype=out_dtype)
                 n_raw = len(raw_windows)
-                del raw_windows
+                output_bytes = (n_samples * window_len
+                                * np.dtype(out_dtype).itemsize)
 
-                atomic_save_npy(npy_path, samples)
-                snrs = meta.get("snrs", [])
-                meta_rows = []
-                for i, s in enumerate(meta["scenarios"]):
-                    snr = snrs[i] if i < len(snrs) else ""
-                    meta_rows.append([s, snr])
+                if output_bytes > STREAMING_THRESHOLD:
+                    raw_win_path = os.path.join(parts_dir, f"{class_name}_raw_windows.npy")
+                    atomic_save_npy(raw_win_path, raw_windows)
+                    del raw_windows
+
+                    npy_tmp = npy_path + ".tmp"
+                    scenarios, snrs = apply_impairments_streaming(
+                        raw_win_path, npy_tmp, n_samples,
+                        fs=domain.sample_rate, window_len=window_len,
+                        dtype=out_dtype)
+                    os.replace(npy_tmp, npy_path)
+
+                    meta_rows = [[s, snr] for s, snr in zip(scenarios, snrs)]
+                    n_out = n_samples
+                else:
+                    samples, meta = apply_impairments(
+                        raw_windows, n_samples,
+                        fs=domain.sample_rate, window_len=window_len,
+                        return_metadata=True, dtype=out_dtype)
+                    del raw_windows
+                    n_out = len(samples)
+
+                    atomic_save_npy(npy_path, samples)
+                    snrs = meta.get("snrs", [])
+                    meta_rows = []
+                    for i, s in enumerate(meta["scenarios"]):
+                        snr = snrs[i] if i < len(snrs) else ""
+                        meta_rows.append([s, snr])
+                    del samples, meta
+
                 atomic_write_csv(meta_path, ["scenario", "snr"], meta_rows)
                 BaseGenerator._write_hash(hash_path, cfg_hash)
 
                 log.info("%15s: %d raw -> %d samples (window_len=%d)",
-                         class_name, n_raw, len(samples), window_len)
+                         class_name, n_raw, n_out, window_len)
                 rewindowed += 1
 
         log.info("Re-windowed %d classes, %d already up-to-date",
