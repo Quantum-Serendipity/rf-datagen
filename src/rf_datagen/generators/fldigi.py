@@ -11,11 +11,11 @@ import xmlrpc.client
 import numpy as np
 from scipy.signal import resample
 
-from ..constants import FS, WINDOW_LEN
+from ..constants import FS, WINDOW_LEN, STREAMING_THRESHOLD
 from ..dsp import hilbert_analytic, audio_to_iq
 from ..content.ham_text import get_text_for_mode
 from ..content.typing import TypingCadenceModel
-from ..impairments import extract_windows, apply_impairments, configure_impairments
+from ..impairments import extract_windows, apply_impairments, apply_impairments_streaming, configure_impairments
 from ..isolation import IsolatedPulseServer
 from ..logging_config import get_logger
 from ..output import atomic_save_npy, atomic_write_csv
@@ -423,28 +423,48 @@ class FldigiGenerator(BaseGenerator):
             log.warning("%15s: FAILED (no valid windows)", mode_name)
             return mode_name, {"status": "failed",
                                "reason": "no valid windows"}
-        samples, meta = apply_impairments(
-            raw_windows, n_samples, fs=self.fs,
-            window_len=self.window_len, return_metadata=True,
-            dtype=np.complex64)
-        n_raw = len(raw_windows)
-        del raw_windows
-        n_out = len(samples)
 
+        n_raw = len(raw_windows)
         npy_path = os.path.join(parts_dir, f"{mode_name}.npy")
         meta_path = os.path.join(parts_dir, f"{mode_name}_meta.csv")
         hash_path = os.path.join(parts_dir, f"{mode_name}.hash")
 
-        atomic_save_npy(npy_path, samples)
-        snrs = meta.get("snrs", [])
-        meta_rows = []
-        for i, s in enumerate(meta["scenarios"]):
-            snr = snrs[i] if i < len(snrs) else ""
-            meta_rows.append([s, snr])
+        output_bytes = n_samples * self.window_len * np.dtype(np.complex64).itemsize
+
+        if output_bytes > STREAMING_THRESHOLD:
+            # Large output: stream impairments through memmap
+            raw_win_path = os.path.join(parts_dir, f"{mode_name}_raw_windows.npy")
+            atomic_save_npy(raw_win_path, raw_windows)
+            del raw_windows
+
+            npy_tmp = npy_path + ".tmp"
+            scenarios, snrs = apply_impairments_streaming(
+                raw_win_path, npy_tmp, n_samples,
+                fs=self.fs, window_len=self.window_len,
+                dtype=np.complex64)
+            os.replace(npy_tmp, npy_path)
+
+            meta_rows = [[s, snr] for s, snr in zip(scenarios, snrs)]
+            n_out = n_samples
+        else:
+            samples, meta = apply_impairments(
+                raw_windows, n_samples, fs=self.fs,
+                window_len=self.window_len, return_metadata=True,
+                dtype=np.complex64)
+            del raw_windows
+            n_out = len(samples)
+
+            atomic_save_npy(npy_path, samples)
+            snrs = meta.get("snrs", [])
+            meta_rows = []
+            for i, s in enumerate(meta["scenarios"]):
+                snr = snrs[i] if i < len(snrs) else ""
+                meta_rows.append([s, snr])
+            del samples, meta
+
         atomic_write_csv(meta_path, ["scenario", "snr"], meta_rows)
         cfg_hash = self._config_hash(mode_name, n_samples)
         self._write_hash(hash_path, cfg_hash)
-        del samples, meta
 
         if preloaded_iq is not None:
             log.info("%15s: %d raw -> %d samples (from cached raw stream)",
