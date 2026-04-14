@@ -292,9 +292,10 @@ def assemble_parts(output_dir, generator_name=None, window_len=None,
             label_contributions = {}
         prev_label = label
 
-        windows = np.load(npy_path)
+        windows = np.load(npy_path, mmap_mode='r')
         iq_data[offset:offset + n] = windows
         del windows
+        iq_data.flush()  # flush dirty pages so kernel can reclaim RAM
 
         label_contributions[source] = n
         all_tags.extend([label] * n)
